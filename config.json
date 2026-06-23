@@ -1,14 +1,14 @@
 {
-  "token": "f2db52a8ecdaa84b5de87aed9c822f3f2b6b89fb4a7ed1dda2a632f4fa715bab",
-  "room_id": "6a3440c4192029dd76b6412a",
+  "token": "",
+  "room_id": "",
   "owner": "NXLN",
   "autoplay_list": "https://youtube.com/playlist?list=PLfP6i5T0-DkLrBQvVfxeL-zGZdBvQ5Jm5&si=EM-2aSRlHesqQW1g",
   "autoplay_timer": 20,
   "radio": {
-    "username": "source",
-    "password": "UqyggF30zrsb8emn37W4ui",
-    "icecast_server": "138.2.160.58",
-    "icecast_port": "8000",
-    "mount_point": "/mount_79a6e8b4"
+    "username": "",
+    "password": "",
+    "icecast_server": "",
+    "icecast_port": "",
+    "mount_point": "/"
   }
 }
