@@ -537,7 +537,7 @@ bot.on('chatCreate', async (user, message) => {
             interrupt_autoplay();
         }
 
-        await bot.whisper.send(user.id,`🔍 Searching for @${user.username}... [ ${songQuery} ]`);
+        await bot.whisper.send(user.id,`🔍 Searching for @${user.username}... \n[ ${songQuery} ]`);
 
         const metaArgs = ['--cookies', path.join(__dirname, 'cookies.txt'), '--dump-json', `ytsearch1:${songQuery}`];
         const env = { ...process.env };
