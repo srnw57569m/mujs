@@ -120,7 +120,7 @@ async function fetch_autoplay_playlist() {
 async function fetch_and_download_youtube(song_request, isUrl = false) {
     return new Promise((resolve) => {
         const target = isUrl ? song_request : `ytsearch1:${song_request}`;
-        const metaArgs = ['--dump-json', target];
+        const metaArgs = ['--cookies', path.join(__dirname, 'cookies.txt'), '--dump-json', target];
         const env = { ...process.env };
         delete env.NODE_CHANNEL_FD; delete env.NODE_UNIQUE_ID; delete env.NODE_OPTIONS;
 
@@ -128,6 +128,9 @@ async function fetch_and_download_youtube(song_request, isUrl = false) {
         const ytMeta = spawn('yt-dlp', metaArgs, { env });
         
         ytMeta.stdout.on('data', (data) => { metaDataStr += data.toString(); });
+        
+        // طباعة أخطاء جلب البيانات لو وجدت
+        ytMeta.stderr.on('data', (data) => { console.error(`[yt-dlp Meta Error]: ${data}`); });
         
         ytMeta.on('close', () => {
             let title = song_request;
@@ -139,24 +142,42 @@ async function fetch_and_download_youtube(song_request, isUrl = false) {
                 duration = parsed.duration || duration;
             } catch (e) {}
 
-            // تنظيف الملفات القديمة قبل تحميل الملف الجديد عشان الـ Recovery يشتغل صح وما يمسحش نفسه
             const oldFiles = fs.readdirSync(downloadsFolder);
             for (const file of oldFiles) { 
                 try { 
-                    // لو الأغنية الحالية بتستخدم الملف ده، متنسحهوش عشان الـ Recovery لو حصل فصل مفاجئ
                     if (current_track_info && current_track_info.file_path === path.join(downloadsFolder, file)) continue;
                     fs.unlinkSync(path.join(downloadsFolder, file)); 
                 } catch(e){} 
             }
 
-            // توليد اسم ملف فريد ومعتمد على الوقت لتجنب التداخل أثناء الـ Recovery والتحميلات الجديدة
             const uniqueId = Date.now();
             const outputTemplate = path.join(downloadsFolder, `${uniqueId}_%(id)s.%(ext)s`);
-            const downloadArgs = ['--quiet', '--extract-audio', '--audio-format', 'mp3', '--output', outputTemplate, target];
+            
+            // 🔹 تم إزالة '--quiet' عشان نشوف الـ logs بتاعة التحميل بالكامل في الـ Console
+            const downloadArgs = [
+                '--cookies', path.join(__dirname, 'cookies.txt'), 
+                '--extract-audio', 
+                '--audio-format', 'mp3', 
+                '--output', outputTemplate, 
+                target
+            ];
             
             const ytDownloader = spawn('yt-dlp', downloadArgs, { env });
-            ytDownloader.on('close', () => {
+
+            // 🔹 رصد أخطاء التحميل وطباعتها فوراً في الـ Terminal
+            ytDownloader.stderr.on('data', (data) => {
+                console.error(`\x1b[31m[yt-dlp Download Error]: ${data.toString()}\x1b[0m`);
+            });
+
+            // رصد بروجرس التحميل العادي
+            ytDownloader.stdout.on('data', (data) => {
+                console.log(`[yt-dlp Download Log]: ${data.toString().trim()}`);
+            });
+            
+            ytDownloader.on('close', (code) => {
+                console.log(`[yt-dlp] Process exited with code: ${code}`);
                 const files = fs.readdirSync(downloadsFolder).filter(f => f.startsWith(`${uniqueId}_`));
+                
                 if (files.length > 0) {
                     resolve({
                         file_path: path.join(downloadsFolder, files[0]),
@@ -164,6 +185,8 @@ async function fetch_and_download_youtube(song_request, isUrl = false) {
                         real_duration: duration
                     });
                 } else {
+                    // لو رجع null هنطبع تحذير واضح باللون الأحمر
+                    console.error(`\x1b[31m[Error] Failed to find the downloaded file for ID: ${uniqueId}\x1b[0m`);
                     resolve({ file_path: null, real_title: title, real_duration: duration });
                 }
             });
@@ -535,7 +558,8 @@ bot.on('chatCreate', async (user, message) => {
 
         await bot.message.send(`🔍 Searching for @${user.username}... [ ${songQuery} ]`);
 
-        const metaArgs = ['--dump-json', `ytsearch1:${songQuery}`];
+        // 🔹 تعديل: إضافة الكوكيز هنا أثناء البحث عن الأغنية وعرض بياناتها في الشات
+        const metaArgs = ['--cookies', path.join(__dirname, 'cookies.txt'), '--dump-json', `ytsearch1:${songQuery}`];
         const env = { ...process.env };
         delete env.NODE_CHANNEL_FD; delete env.NODE_UNIQUE_ID; delete env.NODE_OPTIONS;
 
