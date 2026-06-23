@@ -114,15 +114,21 @@ async function fetch_autoplay_playlist() {
     });
 }
 
-// 🚀 سحب الصوت الخام مباشرة بدون تكرار جلب الـ Meta وبدون تحويل هارد ديسك لـ mp3
+// 🚀 سحب الصوت الخام وتعديل نظام الحماية لملفات الـ Preload
 async function fetch_and_download_youtube(song_url, fallback_title = "Unknown", fallback_duration = 180) {
     return new Promise((resolve) => {
-        // تنظيف فولدر التحميلات القديمة فوراً قبل التحميل الجديد لتقليل استهلاك الهارد
+        // تنظيف فولدر التحميلات القديمة مع حماية الأغنية الشغالة والأغاني الجاهزة في الكييو
         const oldFiles = fs.readdirSync(downloadsFolder);
         for (const file of oldFiles) { 
             try { 
-                if (current_track_info && current_track_info.file_path === path.join(downloadsFolder, file)) continue;
-                fs.unlinkSync(path.join(downloadsFolder, file)); 
+                const filePath = path.join(downloadsFolder, file);
+                if (current_track_info && current_track_info.file_path === filePath) continue;
+                
+                // تحديث: حماية أي ملف تم تحميله مسبقاً وموجود في الطابور حالياً
+                const isPreloaded = song_queue.some(s => s.file_path === filePath);
+                if (isPreloaded) continue;
+
+                fs.unlinkSync(filePath); 
             } catch(e){} 
         }
 
@@ -164,6 +170,29 @@ async function fetch_and_download_youtube(song_url, fallback_title = "Unknown", 
             }
         });
     });
+}
+
+// 🌐 فانكشن جديدة للتحميل المسبق للأغنية التالية في الطابور في الخلفية
+async function preload_next_song() {
+    if (song_queue.length === 0) return;
+    
+    const next_song = song_queue[0]; // جلب أول أغنية منتظرة في الكييو
+    
+    // لو متنزلة فعلاً أو جاري تحميلها حالياً، اخرج
+    if (next_song.file_path || next_song.is_downloading) return;
+
+    next_song.is_downloading = true;
+    logWithTime(chalk.yellow, `[PRELOAD] Background downloading started for next song: "${next_song.title}"...`);
+
+    const result = await fetch_and_download_youtube(next_song.url, next_song.title, next_song.duration);
+
+    if (result.file_path) {
+        next_song.file_path = result.file_path;
+        logWithTime(chalk.green, `[PRELOAD] Next song is fully buffered and ready to play instantly: "${next_song.title}"`);
+    } else {
+        logWithTime(chalk.red, `[PRELOAD] Failed to pre-download: "${next_song.title}"`);
+    }
+    next_song.is_downloading = false;
 }
 
 async function stop_current_ffmpeg({ timeoutMs = 1500 } = {}) {
@@ -383,6 +412,10 @@ async function playback_loop() {
 
                 current_track_info = { title: result.real_title, owner: "AutoPlay_System", duration: result.real_duration, file_path: result.file_path, elapsed: 0 };
                 await bot.message.send(`📻 [Auto-Play] Now Playing: "${current_track_info.title}"`);
+                
+                // تجهيز الأغنية التالية لو حد ضاف حاجة فجأة في الكييو
+                preload_next_song();
+
                 await stream_to_radioking(result.file_path, 0, { mode: 'copy' });
                 
                 if (fs.existsSync(result.file_path)) fs.unlinkSync(result.file_path);
@@ -396,7 +429,38 @@ async function playback_loop() {
             save_queue();
             
             currently_playing = true;
-            const result = await fetch_and_download_youtube(next_song.url, next_song.title, next_song.duration);
+            
+            let result = null;
+
+            // إذا تم تحميل الأغنية مسبقاً، نأخذ ملفها مباشرة بدون تكرار التحميل
+            if (next_song.file_path && fs.existsSync(next_song.file_path)) {
+                logWithTime(chalk.green, `[PLAYBACK] Instantly launching preloaded track: "${next_song.title}"`);
+                result = {
+                    file_path: next_song.file_path,
+                    real_title: next_song.title,
+                    real_duration: next_song.duration
+                };
+            } else {
+                // لو كانت لسه بتتحمل في الخلفية وخلصت الأغنية القديمة بسرعة، ننتظرها تخلص تحميل
+                if (next_song.is_downloading) {
+                    logWithTime(chalk.yellow, `[PLAYBACK] Next song is finishing its preload cache, holding for a few moments...`);
+                    while (next_song.is_downloading) {
+                        await new Promise(r => setTimeout(r, 300));
+                    }
+                    if (next_song.file_path && fs.existsSync(next_song.file_path)) {
+                        result = {
+                            file_path: next_song.file_path,
+                            real_title: next_song.title,
+                            real_duration: next_song.duration
+                        };
+                    }
+                }
+                
+                // حماية أخيرة: لو منزلتش خالص، حملها عادي بالطريقة العادية
+                if (!result) {
+                    result = await fetch_and_download_youtube(next_song.url, next_song.title, next_song.duration);
+                }
+            }
 
             if (!result.file_path) {
                 await bot.message.send(`❌ Failed to download: "${next_song.title}". Skipping to next...`);
@@ -409,6 +473,10 @@ async function playback_loop() {
             fs.writeFileSync(current_song_file, JSON.stringify(current_track_info, null, 4));
 
             await bot.message.send(`🎵 Now Playing: \n"${current_track_info.title}" \nRequested by @${current_track_info.owner}`);
+            
+            // 🔥 أهم خطوة: بدأنا تشغيل الأغنية الحالية؟ فوراً نبدأ نحمل الأغنية اللي بعدها في الخلفية
+            preload_next_song();
+
             await stream_to_radioking(result.file_path, 0, { mode: 'copy' });
 
             if (fs.existsSync(current_song_file)) { try { fs.unlinkSync(current_song_file); } catch(e){} }
@@ -470,13 +538,7 @@ bot.on('ready', async (session) => {
             await bot.player.teleport(session.user_id, 0, 0, 0);
         }
     } else {
-        await bot.player.teleport(
-                        session.user_id, 
-                        parseFloat(parts.x), 
-                        parseFloat(parts.y), 
-                        parseFloat(parts.z), 
-                        facingDirection
-                    );
+        await bot.player.teleport(session.user_id, 0, 0, 0);
     }
     await fetch_autoplay_playlist();
 
@@ -569,6 +631,9 @@ bot.on('chatCreate', async (user, message) => {
 
             await bot.message.send(`✅ Found! Title: \n"${finalTitle}"\n⏱️ Duration: [${format_time(finalDuration)}]\n🔢 Queue Position: #${song_queue.length}\n👤 Requested by: @${user.username}`);
 
+            // تشغيل التحميل المسبق فوراً إذا أصبحت الأغنية هي التالية في الانتظار
+            preload_next_song();
+
             play_event = true;
             if (!play_task) {
                 play_task = true;
@@ -643,6 +708,12 @@ bot.on('chatCreate', async (user, message) => {
 
     else if (lowerMessage === "/clearq") {
         if (user.username.toLowerCase() === config.owner.toLowerCase()) {
+            // مسح ملفات الـ Cache للأغاني المحملة مسبقاً لحفظ مساحة الهارد
+            for (const song of song_queue) {
+                if (song.file_path && fs.existsSync(song.file_path)) {
+                    try { fs.unlinkSync(song.file_path); } catch(e){}
+                }
+            }
             song_queue = [];
             save_queue();
             await bot.message.send("Music queue has been cleared completely.");
@@ -655,9 +726,17 @@ bot.on('chatCreate', async (user, message) => {
     else if (lowerMessage === "/del") {
         let idx = song_queue.findIndex(s => s.owner === user.username);
         if (idx !== -1) {
-            const removed = song_queue.splice(idx, 1);
+            const removed = song_queue.splice(idx, 1)[0];
+            // مسح ملف الأغنية المحمية لو اتنزلت قبل الحذف
+            if (removed.file_path && fs.existsSync(removed.file_path)) {
+                try { fs.unlinkSync(removed.file_path); } catch(e){}
+            }
             save_queue();
-            await bot.message.send(`Removed your song: "${removed[0].title}" from the queue.`);
+            await bot.message.send(`Removed your song: "${removed.title}" from the queue.`);
+            
+            // إعادة تحميل الأغنية التي أصبحت الأولى بعد عملية الحذف
+            preload_next_song();
+            
             if (song_queue.length === 0 && !currently_playing) check_and_start_autoplay_timer();
         } else {
             await bot.message.send("You don't have any songs in the queue to remove.");
@@ -670,3 +749,4 @@ bot.on('error', (error) => {
 });
 
 bot.login(config.token, config.room_id);
+
