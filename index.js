@@ -48,7 +48,6 @@ let play_task = false;
 let ffmpeg_process = null;
 let encode_process = null;
 
-// Graceful FFmpeg handoff coordination
 let ffmpeg_stop_generation = 0;
 let ffmpeg_stop_promise = Promise.resolve();
 let progress_interval = null;
@@ -61,7 +60,6 @@ let is_autoplay_active = false;
 let autoplay_timeout_handler = null; 
 let is_searching = false;           
 
-// Single-flight state machine guard
 let playback_generation = 0;
 
 const queue_file = path.join(__dirname, 'song_queue.json');
@@ -89,7 +87,6 @@ async function fetch_autoplay_playlist() {
     return new Promise((resolve) => {
         const args = ['--flat-playlist', '--dump-json', config.autoplay_list];
         const env = { ...process.env };
-        delete env.NODE_CHANNEL_FD; delete env.NODE_UNIQUE_ID; delete env.NODE_OPTIONS;
         
         const ytPlaylist = spawn('yt-dlp', args, { env });
         let outputStr = "";
@@ -117,79 +114,54 @@ async function fetch_autoplay_playlist() {
     });
 }
 
-async function fetch_and_download_youtube(song_request, isUrl = false) {
+// 🚀 سحب الصوت الخام مباشرة بدون تكرار جلب الـ Meta وبدون تحويل هارد ديسك لـ mp3
+async function fetch_and_download_youtube(song_url, fallback_title = "Unknown", fallback_duration = 180) {
     return new Promise((resolve) => {
-        const target = isUrl ? song_request : `ytsearch1:${song_request}`;
-        const metaArgs = ['--cookies', path.join(__dirname, 'cookies.txt'), '--dump-json', target];
+        // تنظيف فولدر التحميلات القديمة فوراً قبل التحميل الجديد لتقليل استهلاك الهارد
+        const oldFiles = fs.readdirSync(downloadsFolder);
+        for (const file of oldFiles) { 
+            try { 
+                if (current_track_info && current_track_info.file_path === path.join(downloadsFolder, file)) continue;
+                fs.unlinkSync(path.join(downloadsFolder, file)); 
+            } catch(e){} 
+        }
+
+        const uniqueId = Date.now();
+        const outputTemplate = path.join(downloadsFolder, `${uniqueId}_%(id)s.%(ext)s`);
+        
+        const downloadArgs = [
+            '--cookies', path.join(__dirname, 'cookies.txt'), 
+            '--format', 'bestaudio/best',
+            '--no-playlist',
+            '--output', outputTemplate, 
+            song_url
+        ];
+        
         const env = { ...process.env };
-        delete env.NODE_CHANNEL_FD; delete env.NODE_UNIQUE_ID; delete env.NODE_OPTIONS;
+        const ytDownloader = spawn('yt-dlp', downloadArgs, { env });
 
-        let metaDataStr = '';
-        const ytMeta = spawn('yt-dlp', metaArgs, { env });
+        ytDownloader.stderr.on('data', (data) => {
+            console.error(`\x1b[31m[yt-dlp Download Error]: ${data.toString()}\x1b[0m`);
+        });
+
+        ytDownloader.stdout.on('data', (data) => {
+            console.log(`[yt-dlp Download Log]: ${data.toString().trim()}`);
+        });
         
-        ytMeta.stdout.on('data', (data) => { metaDataStr += data.toString(); });
-        
-        // طباعة أخطاء جلب البيانات لو وجدت
-        ytMeta.stderr.on('data', (data) => { console.error(`[yt-dlp Meta Error]: ${data}`); });
-        
-        ytMeta.on('close', () => {
-            let title = song_request;
-            let duration = 180;
+        ytDownloader.on('close', (code) => {
+            console.log(`[yt-dlp] Process exited with code: ${code}`);
+            const files = fs.readdirSync(downloadsFolder).filter(f => f.startsWith(`${uniqueId}_`));
             
-            try {
-                const parsed = JSON.parse(metaDataStr);
-                title = parsed.title || title;
-                duration = parsed.duration || duration;
-            } catch (e) {}
-
-            const oldFiles = fs.readdirSync(downloadsFolder);
-            for (const file of oldFiles) { 
-                try { 
-                    if (current_track_info && current_track_info.file_path === path.join(downloadsFolder, file)) continue;
-                    fs.unlinkSync(path.join(downloadsFolder, file)); 
-                } catch(e){} 
+            if (files.length > 0) {
+                resolve({
+                    file_path: path.join(downloadsFolder, files[0]),
+                    real_title: fallback_title,
+                    real_duration: fallback_duration
+                });
+            } else {
+                console.error(`\x1b[31m[Error] Failed to find the downloaded file for ID: ${uniqueId}\x1b[0m`);
+                resolve({ file_path: null, real_title: fallback_title, real_duration: fallback_duration });
             }
-
-            const uniqueId = Date.now();
-            const outputTemplate = path.join(downloadsFolder, `${uniqueId}_%(id)s.%(ext)s`);
-            
-            // 🔹 تم إزالة '--quiet' عشان نشوف الـ logs بتاعة التحميل بالكامل في الـ Console
-            const downloadArgs = [
-                '--cookies', path.join(__dirname, 'cookies.txt'), 
-                '--extract-audio', 
-                '--audio-format', 'mp3', 
-                '--output', outputTemplate, 
-                target
-            ];
-            
-            const ytDownloader = spawn('yt-dlp', downloadArgs, { env });
-
-            // 🔹 رصد أخطاء التحميل وطباعتها فوراً في الـ Terminal
-            ytDownloader.stderr.on('data', (data) => {
-                console.error(`\x1b[31m[yt-dlp Download Error]: ${data.toString()}\x1b[0m`);
-            });
-
-            // رصد بروجرس التحميل العادي
-            ytDownloader.stdout.on('data', (data) => {
-                console.log(`[yt-dlp Download Log]: ${data.toString().trim()}`);
-            });
-            
-            ytDownloader.on('close', (code) => {
-                console.log(`[yt-dlp] Process exited with code: ${code}`);
-                const files = fs.readdirSync(downloadsFolder).filter(f => f.startsWith(`${uniqueId}_`));
-                
-                if (files.length > 0) {
-                    resolve({
-                        file_path: path.join(downloadsFolder, files[0]),
-                        real_title: title,
-                        real_duration: duration
-                    });
-                } else {
-                    // لو رجع null هنطبع تحذير واضح باللون الأحمر
-                    console.error(`\x1b[31m[Error] Failed to find the downloaded file for ID: ${uniqueId}\x1b[0m`);
-                    resolve({ file_path: null, real_title: title, real_duration: duration });
-                }
-            });
         });
     });
 }
@@ -239,6 +211,11 @@ async function stop_current_ffmpeg({ timeoutMs = 1500 } = {}) {
 }
 
 async function stream_to_radioking(song_file_path, start_seconds = 0, payload = {}) {
+    if (!song_file_path || !fs.existsSync(song_file_path)) {
+        console.error(`\x1b[31m[FFMPEG ERROR] File path is invalid or does not exist: ${song_file_path}\x1b[0m`);
+        return;
+    }
+
     const radio = config.radio || {};
     const icecast_url = `icecast://${radio.username}:${radio.password}@${radio.icecast_server}:${radio.icecast_port}${radio.mount_point}`;
 
@@ -296,8 +273,6 @@ async function stream_to_radioking(song_file_path, start_seconds = 0, payload = 
         }
 
         const env = { ...process.env };
-        delete env.NODE_CHANNEL_FD; delete env.NODE_UNIQUE_ID; delete env.NODE_OPTIONS;
-
         ffmpeg_process = spawn('ffmpeg', args, { env });
 
         ffmpeg_process.stderr.on('data', (data) => {
@@ -313,7 +288,6 @@ async function stream_to_radioking(song_file_path, start_seconds = 0, payload = 
             const current_elapsed = elapsed_paused_seconds + Math.floor((Date.now() - start_time_ms) / 1000);
             if (current_track_info) {
                 current_track_info.elapsed = current_elapsed;
-                // تحديث ملف الـ Recovery بالثواني الحالية باستمرار للأغاني الحقيقية فقط وليس الأوتوبلاي
                 if (!is_autoplay_active) {
                     fs.writeFileSync(current_song_file, JSON.stringify(current_track_info, null, 4));
                 }
@@ -327,7 +301,7 @@ async function stream_to_radioking(song_file_path, start_seconds = 0, payload = 
     });
 }
 
-function check_and_start_autoplay_timer() {
+async function check_and_start_autoplay_timer() {
     if (autoplay_timeout_handler) {
         clearTimeout(autoplay_timeout_handler);
         autoplay_timeout_handler = null;
@@ -339,6 +313,11 @@ function check_and_start_autoplay_timer() {
     const timer_generation = playback_generation;
     const wait_seconds = config.autoplay_timer !== undefined ? parseInt(config.autoplay_timer) : 60;
     logWithTime(chalk.magenta, `[AUTOPLAY] Queue is empty. Timer armed! Will launch Autoplay in ${wait_seconds} seconds...`);
+    try {
+        await bot.message.send(`📻 [AUTOPLAY] Queue is empty. Timer armed! Will launch Autoplay in ${wait_seconds} seconds...`);
+    } catch (err) {
+        console.error("Failed to send autoplay timer message:", err);
+    }
 
     autoplay_timeout_handler = setTimeout(() => {
         if (timer_generation !== playback_generation) return;
@@ -350,6 +329,7 @@ function check_and_start_autoplay_timer() {
         play_task = true;
         is_autoplay_active = true;
         logWithTime(chalk.green, `[AUTOPLAY] Timer expired. Booting Auto-Play engine now...`);
+        bot.message.send(`📻 [AUTOPLAY] Timer expired. Booting Auto-Play engine now...`);
         playback_loop();
     }, wait_seconds * 1000);
 }
@@ -381,7 +361,6 @@ async function playback_loop() {
     play_event = true;
 
     while (play_event) {
-        // 1. لو الكيو فاضي والأوتوبلاي شغال
         if (song_queue.length === 0) {
             if (is_autoplay_active && autoplay_tracks_raw.length > 0) {
                 if (autoplay_pool.length === 0) autoplay_pool = [...autoplay_tracks_raw];
@@ -389,10 +368,16 @@ async function playback_loop() {
                 const chosen_track = autoplay_pool.splice(random_index, 1)[0];
 
                 currently_playing = true;
-                const result = await fetch_and_download_youtube(chosen_track.url, true);
+                const result = await fetch_and_download_youtube(chosen_track.url, chosen_track.title, chosen_track.duration);
                 
                 if (!is_autoplay_active) {
                     if (result.file_path && fs.existsSync(result.file_path)) fs.unlinkSync(result.file_path);
+                    continue;
+                }
+
+                if (!result.file_path) {
+                    logWithTime(chalk.red, `[AUTOPLAY] Failed to download track: ${chosen_track.title}. Skipping...`);
+                    currently_playing = false;
                     continue;
                 }
 
@@ -405,24 +390,27 @@ async function playback_loop() {
                 break;
             }
         } 
-        // 2. لو فيه أغنية في الكيو الحقيقي
         else {
             is_autoplay_active = false;
             const next_song = song_queue.shift();
             save_queue();
             
             currently_playing = true;
-            const result = await fetch_and_download_youtube(next_song.title);
+            const result = await fetch_and_download_youtube(next_song.url, next_song.title, next_song.duration);
+
+            if (!result.file_path) {
+                await bot.message.send(`❌ Failed to download: "${next_song.title}". Skipping to next...`);
+                currently_playing = false;
+                continue;
+            }
 
             current_track_info = { title: result.real_title, owner: next_song.owner, duration: result.real_duration, file_path: result.file_path, elapsed: 0 };
             
-            // إنشاء ملف حفظ الأغنية الحالية لضمان استرجاعها فوراً لو حصل فصل مفاجئ
             fs.writeFileSync(current_song_file, JSON.stringify(current_track_info, null, 4));
 
             await bot.message.send(`🎵 Now Playing: \n"${current_track_info.title}" \nRequested by @${current_track_info.owner}`);
             await stream_to_radioking(result.file_path, 0, { mode: 'copy' });
 
-            // مسح ملف الـ Recovery بعد انتهاء الأغنية بسلام بنجاح
             if (fs.existsSync(current_song_file)) { try { fs.unlinkSync(current_song_file); } catch(e){} }
             if (result.file_path && fs.existsSync(result.file_path)) fs.unlinkSync(result.file_path);
         }
@@ -441,28 +429,22 @@ async function playback_loop() {
 bot.on('ready', async (session) => {
     logWithTime(chalk.green, `\n[Music Bot Ready] Connected successfully!`);
     logWithTime(chalk.cyan, `Logged in as Bot ID: ${session.user_id}`);
-    // 1. قراءة وتنظيف الداتا من الملف
-    // 1. قراءة وتنظيف الداتا من الملف
+    
     const posPath = path.join(__dirname, 'musicbot_pos.json');
     if (fs.existsSync(posPath)) {
         try {
             const posData = JSON.parse(fs.readFileSync(posPath, 'utf8'));
-            
             const cleanStr = posData.bot_position.replace('}', '');
             const parts = cleanStr.split(',').reduce((acc, part) => {
                 const [key, val] = part.split('=');
                 if (key && val) {
-                    // تنظيف كامل من الفراغات وعلامات التنصيص المفردة والمزدوجة
                     acc[key.trim()] = val.trim().replace(/['"]/g, '');
                 }
                 return acc;
             }, {});
 
-            // 2. تأخير النقل لمدة ثانيتين عشان نضمن رسبنة البوت
             setTimeout(async () => {
                 try {
-                    // الـ SDK طالب الفورمات دي بالظبط: FrontRight, FrontLeft, BackRight, BackLeft
-                    // الكود ده هيضمن إن أول حرف من كل كلمة كابيتال والباقي سمول تبعا لطلب الـ SDK
                     let facingDirection = parts.facing;
                     if (facingDirection.toLowerCase() === 'frontright') facingDirection = 'FrontRight';
                     if (facingDirection.toLowerCase() === 'frontleft') facingDirection = 'FrontLeft';
@@ -477,6 +459,7 @@ bot.on('ready', async (session) => {
                         facingDirection
                     );
                     logWithTime(chalk.green, `[TELEPORT SUCCESS] Bot successfully moved to: x=${parts.x}, y=${parts.y}, z=${parts.z}, facing=${facingDirection}`);
+                    await bot.message.send(`[System] BeatlY On The Beat!`);
                 } catch (teleportErr) {
                     console.error(chalk.red("[TELEPORT DELAYED ERROR] Failed inside timeout:"), teleportErr.message);
                 }
@@ -487,19 +470,21 @@ bot.on('ready', async (session) => {
             await bot.player.teleport(session.user_id, 0, 0, 0);
         }
     } else {
-        await bot.player.teleport(session.user_id, 0, 0, 0);
+        await bot.player.teleport(
+                        session.user_id, 
+                        parseFloat(parts.x), 
+                        parseFloat(parts.y), 
+                        parseFloat(parts.z), 
+                        facingDirection
+                    );
     }
     await fetch_autoplay_playlist();
 
-    // تشغيل الـ Recovery للإنقاذ عند إعادة تشغيل البوت
-    // تشغيل الـ Recovery للإنقاذ عند إعادة تشغيل البوت
     if (fs.existsSync(current_song_file)) {
         try {
             const saved_track = JSON.parse(fs.readFileSync(current_song_file, 'utf8'));
             if (saved_track && saved_track.file_path && fs.existsSync(saved_track.file_path)) {
                 logWithTime(chalk.yellow, `[RECOVERY] Found interrupted track: "${saved_track.title}" at second ${saved_track.elapsed}`);
-                
-                // حساب دقيقة الفصل بالظبط للرسالة
                 const minutesStr = format_time(saved_track.elapsed);
                 
                 await bot.message.send(`⚠️ Reconnected now... \n🔄 Resuming track: \n"${saved_track.title}" \nStarting from: [${minutesStr}]⏱️ \n👤 Requested by: @${saved_track.owner}`);
@@ -510,16 +495,11 @@ bot.on('ready', async (session) => {
                 is_autoplay_active = false;
 
                 (async () => {
-                    // تشغيل الأغنية من الثانية اللي وقفت عندها باستخدام reencode بثبات تام
                     await stream_to_radioking(saved_track.file_path, saved_track.elapsed, { mode: 'reencode' });
-                    
                     if (fs.existsSync(current_song_file)) { try { fs.unlinkSync(current_song_file); } catch(e){} }
                     if (fs.existsSync(saved_track.file_path)) { try { fs.unlinkSync(saved_track.file_path); } catch(e){} }
-                    
                     currently_playing = false;
                     current_track_info = null;
-                    
-                    // نفتح اللوب هنا عشان يكمل باقي الكيو لو فيه أغاني تانية متسيفة
                     playback_loop();
                 })();
                 return;
@@ -553,15 +533,14 @@ bot.on('chatCreate', async (user, message) => {
         
         if (is_autoplay_active === true) {
             logWithTime(chalk.yellow, `[AUTOPLAY] Interrupting autoplay to prioritize @${user.username}`);
+            await bot.message.send(`⚠️ Interrupting autoplay to prioritize @${user.username}`);
             interrupt_autoplay();
         }
 
-        await bot.message.send(`🔍 Searching for @${user.username}... [ ${songQuery} ]`);
+        await bot.whisper.send(user.id,`🔍 Searching for @${user.username}... [ ${songQuery} ]`);
 
-        // 🔹 تعديل: إضافة الكوكيز هنا أثناء البحث عن الأغنية وعرض بياناتها في الشات
         const metaArgs = ['--cookies', path.join(__dirname, 'cookies.txt'), '--dump-json', `ytsearch1:${songQuery}`];
         const env = { ...process.env };
-        delete env.NODE_CHANNEL_FD; delete env.NODE_UNIQUE_ID; delete env.NODE_OPTIONS;
 
         let metaDataStr = '';
         const ytMeta = spawn('yt-dlp', metaArgs, { env });
@@ -570,14 +549,20 @@ bot.on('chatCreate', async (user, message) => {
         ytMeta.on('close', async () => {
             let finalTitle = songQuery;
             let finalDuration = 180;
+            let videoUrl = `ytsearch1:${songQuery}`;
 
             try {
                 const parsed = JSON.parse(metaDataStr);
                 finalTitle = parsed.title || finalTitle;
                 finalDuration = parsed.duration || finalDuration;
+                if (parsed.webpage_url) {
+                    videoUrl = parsed.webpage_url;
+                } else if (parsed.id) {
+                    videoUrl = `https://www.youtube.com/watch?v=${parsed.id}`;
+                }
             } catch (e) {}
 
-            const song = { title: finalTitle, owner: user.username, duration: finalDuration };
+            const song = { title: finalTitle, owner: user.username, duration: finalDuration, url: videoUrl };
             song_queue.push(song);
             save_queue();
             is_searching = false;
@@ -600,9 +585,7 @@ bot.on('chatCreate', async (user, message) => {
         
         let queue_message = `Current Queue (${song_queue.length} songs):\n\n`;
         song_queue.slice(0, 5).forEach((song, idx) => {
-            // لو اسم الأغنية أطول من 35 حرف، بنقصه عشان الرسالة كلها متعديش الـ 256 حرف
             const cleanTitle = song.title.length > 35 ? song.title.substring(0, 35) + "..." : song.title;
-            
             queue_message += `${idx + 1} - 🔽\n"${cleanTitle}"\n👤 Req by: @${song.owner}\n\n`;
         });
         
@@ -610,7 +593,7 @@ bot.on('chatCreate', async (user, message) => {
             queue_message += `... and ${song_queue.length - 5} more tracks.`;
         }
         
-        await bot.message.send(queue_message);
+        await bot.whisper.send(user.id,queue_message);
     }
 
     else if (lowerMessage === "/np") {
@@ -632,7 +615,7 @@ bot.on('chatCreate', async (user, message) => {
         }
 
         const display_owner = is_autoplay_active ? "System (Auto-Play)" : `@${current_track_info.owner}`;
-        await bot.message.send(`🎵 Now Playing: \n"${current_track_info.title}"\n${progress_bar}\n⏱️ Time: [${format_time(current_elapsed)} / ${format_time(total_duration)}]\n👤 Requested by: ${display_owner}`);
+        await bot.whisper.send(user.id,`🎵 Now Playing: \n"${current_track_info.title}"\n${progress_bar}\n⏱️ Time: [${format_time(current_elapsed)} / ${format_time(total_duration)}]\n👤 Requested by: ${display_owner}`);
     }
     
     else if (lowerMessage === "/skip") {
@@ -645,14 +628,12 @@ bot.on('chatCreate', async (user, message) => {
         await bot.message.send(`⏭️ Skipped: \n"${current_track_info.title}"\n👤 Skipped by: @${user.username}\n📥 Originally requested by: ${display_owner}`);
         
         clearInterval(progress_interval);
-
         ffmpeg_stop_promise = stop_current_ffmpeg({ timeoutMs: 1500 });
 
         if (encode_process) {
             try { encode_process.kill(); } catch (e) {}
         }
 
-        // مسح ملف الـ Recovery عند عمل سكيب صريح حتى لا يعيد تشغيلها البوت بالخطأ
         if (fs.existsSync(current_song_file)) { try { fs.unlinkSync(current_song_file); } catch(e){} }
         
         currently_playing = false;
