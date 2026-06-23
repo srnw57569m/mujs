@@ -139,6 +139,8 @@ async function fetch_and_download_youtube(song_url, fallback_title = "Unknown", 
             '--cookies', path.join(__dirname, 'cookies.txt'), 
             '--format', 'bestaudio/best',
             '--no-playlist',
+            '--force-ipv4',                                         // Bypasses broken IPv6 routing to Google Video servers
+            '--extractor-args', 'youtube:player_client=android,web', // Spoofs mobile app streams to avoid n-param throttling
             '--output', outputTemplate, 
             song_url
         ];
@@ -749,4 +751,3 @@ bot.on('error', (error) => {
 });
 
 bot.login(config.token, config.room_id);
-
