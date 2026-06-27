@@ -139,8 +139,10 @@ async function fetch_and_download_youtube(song_url, fallback_title = "Unknown", 
             '--cookies', path.join(__dirname, 'cookies.txt'), 
             '--format', 'bestaudio/best',
             '--no-playlist',
+            '--extractor-args', 'youtube:player_client=android,web', // 👈 إضافة دي لتهريب الطلب من الحظر
+            '--force-overwrites', // 👈 للتأكد إن الملفات مابتعملش تداخل
             '--output', outputTemplate, 
-            song_url
+                    song_url
         ];
         
         const env = { ...process.env };
@@ -246,8 +248,10 @@ async function stream_to_radioking(song_file_path, start_seconds = 0, payload = 
     }
 
     const radio = config.radio || {};
-    const icecast_url = `icecast://${radio.username}:${radio.password}@${radio.icecast_server}:${radio.icecast_port}${radio.mount_point}`;
-
+    // غير السطر ده في bot.js
+    // في ملف bot.js - عدل الـ icecast_url ليكون بدون باسورد
+    // هنستخدم الباسورد الماستر بتاعة السيرفر (SourcePass2026) عشان Icecast يفتح الباب غصب عنه
+    const icecast_url = `icecast://source:${radio.password}@${radio.icecast_server}:${radio.icecast_port}${radio.mount_point}`;
     await ffmpeg_stop_promise;
 
     return new Promise((resolve) => {
