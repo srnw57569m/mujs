@@ -43,7 +43,7 @@ if (!fs.existsSync(downloadsFolder)) {
 
 let botPosition = null;
 let botUserId = null;
-
+let encode_process = null;
 let song_queue = [];
 let currently_playing = false;
 let current_track_info = null; 
