@@ -49,8 +49,9 @@ let currently_playing = false;
 let current_track_info = null; 
 let play_event = false;
 let play_task = false;
-let ffmpeg_process = null;
-let encode_process = null;
+let master_ffmpeg = null;
+let decoder_process = null; // ده بديل لـ ffmpeg_process للأغاني
+let silence_process = null; // ده لإنتاج الصوت الصامت في الفواصلlet encode_process = null;
 
 let ffmpeg_stop_generation = 0;
 let ffmpeg_stop_promise = Promise.resolve();
@@ -79,6 +80,67 @@ function format_time(seconds) {
     const mins = Math.floor(seconds / 60);
     const secs = Math.floor(seconds % 60);
     return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+}
+
+// 1. البث الرئيسي (دلوقتي بياخد MP3 جاهز وبيرفعه مباشرة بدون ضغط من أول وجديد)
+function start_master_stream() {
+    if (master_ffmpeg) return;
+    
+    const radio = config.radio || {};
+    const icecast_url = `icecast://source:${radio.password}@${radio.icecast_server}:${radio.icecast_port}${radio.mount_point}`;
+    
+    logWithTime(chalk.blue, "[STREAM] Starting stable stream...");
+    
+    // شلنا كل الـ Ice-specific params وسيبنا الأساسيات بس
+    master_ffmpeg = spawn('ffmpeg', [
+        '-re',
+        '-f', 'mp3',
+        '-i', 'pipe:0',
+        '-c:a', 'copy',
+        '-content_type', 'audio/mpeg',
+        '-f', 'mp3',
+        icecast_url
+    ]);
+
+    master_ffmpeg.on('error', (err) => {
+        logWithTime(chalk.red, `[STREAM] FFMPEG Error: ${err.message}`);
+    });
+
+    master_ffmpeg.on('close', (code) => {
+        logWithTime(chalk.red, `[STREAM] FFMPEG Closed (Code: ${code}). Retrying in 10s...`);
+        master_ffmpeg = null;
+        // زودنا الوقت لـ 10 ثواني عشان السيرفر يلحق يفتح الكونكشن صح
+        setTimeout(start_master_stream, 10000); 
+    });
+}
+
+// 2. الصمت (بيصنع MP3 صامت ويبعته)
+function start_silence() {
+    if (silence_process) return;
+    
+    silence_process = spawn('ffmpeg', [
+        '-re',
+        '-f', 'lavfi',
+        '-i', 'anullsrc=r=44100:cl=stereo',
+        '-c:a', 'libmp3lame', '-b:a', '128k', '-ar', '44100', '-ac', '2',
+        '-f', 'mp3',
+        'pipe:1'
+    ]);
+    
+    silence_process.stdout.on('data', (chunk) => {
+        if (master_ffmpeg && master_ffmpeg.stdin && master_ffmpeg.stdin.writable) {
+            master_ffmpeg.stdin.write(chunk);
+        }
+    });
+}
+
+// 3. دي زي ما هي مفيهاش تعديل بس عشان تتأكد إنها معاك
+function stop_silence() {
+    if (silence_process) {
+        silence_process.stdout.removeAllListeners('data');
+        try { silence_process.kill('SIGKILL'); } catch(e){}
+        silence_process = null;
+    }
 }
 
 async function fetch_autoplay_playlist() {
@@ -201,12 +263,74 @@ async function preload_next_song() {
     next_song.is_downloading = false;
 }
 
+
+async function stream_to_radioking(song_file_path, start_seconds = 0, payload = {}) {
+    if (!master_ffmpeg) start_master_stream();
+
+    return new Promise((resolve) => {
+        stop_silence(); // بنوقف الصمت أولاً
+
+        if (progress_interval) {
+            clearInterval(progress_interval);
+            progress_interval = null;
+        }
+
+        // أوامر التجهيز لمنع اللجلجة في التقديم
+        let args = [
+            '-re',
+            '-analyzeduration', '0', 
+            '-probesize', '32'
+        ];
+        
+        if (start_seconds > 0) {
+            args.push('-ss', start_seconds.toString());
+        }
+
+        // تحويل الأغنية لـ MP3 وإرسالها للماستر
+        args.push(
+            '-i', song_file_path,
+            '-c:a', 'libmp3lame', '-b:a', '128k', '-ar', '44100', '-ac', '2',
+            '-f', 'mp3',
+            'pipe:1'
+        );
+
+        const env = { ...process.env };
+        decoder_process = spawn('ffmpeg', args, { env });
+
+        decoder_process.stdout.on('data', (chunk) => {
+            if (master_ffmpeg && master_ffmpeg.stdin && master_ffmpeg.stdin.writable) {
+                master_ffmpeg.stdin.write(chunk);
+            }
+        });
+
+        start_time_ms = Date.now();
+        elapsed_paused_seconds = start_seconds;
+
+        progress_interval = setInterval(() => {
+            const current_elapsed = elapsed_paused_seconds + Math.floor((Date.now() - start_time_ms) / 1000);
+            if (current_track_info) {
+                current_track_info.elapsed = current_elapsed;
+                if (!is_autoplay_active) {
+                    fs.writeFileSync(current_song_file, JSON.stringify(current_track_info, null, 4));
+                }
+            }
+        }, 1500);
+
+        decoder_process.on('close', () => {
+            clearInterval(progress_interval);
+            decoder_process = null;
+            start_silence(); 
+            resolve();
+        });
+    });
+}
+
 async function stop_current_ffmpeg({ timeoutMs = 1500 } = {}) {
-    const proc = ffmpeg_process;
+    const proc = decoder_process;
     if (!proc) return;
 
     const genAtStop = ++ffmpeg_stop_generation;
-    ffmpeg_process = proc;
+    decoder_process = proc;
 
     if (progress_interval) {
         clearInterval(progress_interval);
@@ -223,7 +347,8 @@ async function stop_current_ffmpeg({ timeoutMs = 1500 } = {}) {
                 proc.removeAllListeners('error');
             } catch (e) {}
             if (ffmpeg_stop_generation === genAtStop) {
-                ffmpeg_process = null;
+                decoder_process = null;
+                start_silence(); // لو عملنا سكيب، شغل الصمت لحد ما الأغنية الجديدة تبدأ
             }
             resolve();
         };
@@ -231,110 +356,13 @@ async function stop_current_ffmpeg({ timeoutMs = 1500 } = {}) {
         proc.once('close', () => finish());
         proc.once('error', () => finish());
 
-        try {
-            proc.kill('SIGTERM');
-        } catch (e) {}
+        try { proc.kill('SIGTERM'); } catch (e) {}
 
         setTimeout(() => {
             if (done) return;
-            try {
-                proc.kill('SIGKILL');
-            } catch (e) {}
+            try { proc.kill('SIGKILL'); } catch (e) {}
             finish();
         }, timeoutMs);
-    });
-}
-
-async function stream_to_radioking(song_file_path, start_seconds = 0, payload = {}) {
-    if (!song_file_path || !fs.existsSync(song_file_path)) {
-        console.error(`\x1b[31m[FFMPEG ERROR] File path is invalid or does not exist: ${song_file_path}\x1b[0m`);
-        return;
-    }
-
-    const radio = config.radio || {};
-    // غير السطر ده في bot.js
-    // في ملف bot.js - عدل الـ icecast_url ليكون بدون باسورد
-    // هنستخدم الباسورد الماستر بتاعة السيرفر (SourcePass2026) عشان Icecast يفتح الباب غصب عنه
-    const icecast_url = `icecast://source:${radio.password}@${radio.icecast_server}:${radio.icecast_port}${radio.mount_point}`;
-    await ffmpeg_stop_promise;
-
-    return new Promise((resolve) => {
-        if (progress_interval) {
-            clearInterval(progress_interval);
-            progress_interval = null;
-        }
-
-        const inputBase = [
-            '-re',
-            '-analyzeduration', '0',
-            '-probesize', '32'
-        ];
-
-        const outputLowLatency = [
-            '-bufsize', '512k',
-            '-flush_packets', '1'
-        ];
-
-        const mode = payload && payload.mode ? payload.mode : (start_seconds === 0 ? 'copy' : 'reencode');
-        let args;
-
-        if (mode === 'copy') {
-            args = [
-                '-re',
-                '-i', song_file_path,
-                '-acodec', 'libmp3lame',
-                '-b:a', '128k',
-                '-ar', '44100',
-                '-ac', '2',
-                '-f', 'mp3',
-                '-content_type', 'audio/mpeg',
-                '-bufsize', '512k',
-                '-flush_packets', '1',
-                icecast_url
-            ];
-        } else {
-            args = [
-                ...inputBase,
-                '-ss', start_seconds.toString(),
-                '-i', song_file_path,
-                '-acodec', 'libmp3lame',
-                '-ab', '128k',
-                '-ar', '44100',
-                '-ac', '2',
-                '-f', 'mp3',
-                '-content_type', 'audio/mpeg',
-                ...outputLowLatency,
-                '-flush_packets', '1',
-                icecast_url
-            ];
-        }
-
-        const env = { ...process.env };
-        ffmpeg_process = spawn('ffmpeg', args, { env });
-
-        ffmpeg_process.stderr.on('data', (data) => {
-            const msg = data.toString().trim();
-            if (!msg) return;
-            console.log(`[FFMPEG] ${msg}`);
-        });
-
-        start_time_ms = Date.now();
-        elapsed_paused_seconds = start_seconds;
-
-        progress_interval = setInterval(() => {
-            const current_elapsed = elapsed_paused_seconds + Math.floor((Date.now() - start_time_ms) / 1000);
-            if (current_track_info) {
-                current_track_info.elapsed = current_elapsed;
-                if (!is_autoplay_active) {
-                    fs.writeFileSync(current_song_file, JSON.stringify(current_track_info, null, 4));
-                }
-            }
-        }, 1500);
-
-        ffmpeg_process.on('close', () => {
-            clearInterval(progress_interval);
-            resolve();
-        });
     });
 }
 
@@ -384,9 +412,7 @@ function interrupt_autoplay() {
 
     ffmpeg_stop_promise = stop_current_ffmpeg({ timeoutMs: 2000 });
 
-    if (encode_process) {
-        try { encode_process.kill(); } catch (e) {}
-    }
+    
 
     currently_playing = false;
     current_track_info = null;
@@ -552,6 +578,7 @@ bot.on('ready', async (session) => {
         await bot.message.send("Made By BeatlY\n join us at:\nwwww.beatly.click");
     }
     await fetch_autoplay_playlist();
+    start_master_stream();
 
     if (fs.existsSync(current_song_file)) {
         try {
@@ -706,9 +733,7 @@ bot.on('chatCreate', async (user, message) => {
         clearInterval(progress_interval);
         ffmpeg_stop_promise = stop_current_ffmpeg({ timeoutMs: 1500 });
 
-        if (encode_process) {
-            try { encode_process.kill(); } catch (e) {}
-        }
+        
 
         if (fs.existsSync(current_song_file)) { try { fs.unlinkSync(current_song_file); } catch(e){} }
         
