@@ -40,6 +40,10 @@ if (!fs.existsSync(downloadsFolder)) {
     fs.mkdirSync(downloadsFolder, { recursive: true });
 }
 
+
+let botPosition = null;
+let botUserId = null;
+
 let song_queue = [];
 let currently_playing = false;
 let current_track_info = null; 
@@ -139,7 +143,7 @@ async function fetch_and_download_youtube(song_url, fallback_title = "Unknown", 
             '--cookies', path.join(__dirname, 'cookies.txt'), 
             '--format', 'bestaudio/best',
             '--no-playlist',
-            '--extractor-args', 'youtube:player_client=android,web', // 👈 إضافة دي لتهريب الطلب من الحظر
+            '--extractor-args', 'youtube:player_client=web', // 👈 إضافة دي لتهريب الطلب من الحظر
             '--force-overwrites', // 👈 للتأكد إن الملفات مابتعملش تداخل
             '--output', outputTemplate, 
                     song_url
@@ -390,6 +394,42 @@ function interrupt_autoplay() {
     play_task = false;
 }
 
+function saveBotPosition() {
+    const locData = {
+        bot_position: botPosition ? { x: botPosition.x, y: botPosition.y, z: botPosition.z, facing: botPosition.facing } : null,
+        admins: [config.owner]
+    };
+    const filePath = path.join(__dirname, 'musicbot_pos.json');
+    try {
+        fs.writeFileSync(filePath, JSON.stringify(locData, null, 2), { encoding: 'UTF-8' });
+        console.log(chalk.green("[INFO] Bot position saved successfully."));
+    } catch (error) {
+        console.error(chalk.red(`[ERROR] Failed to save bot position: ${error.message}`));
+    }
+}
+
+// تحميل موقع البوت من ملف .json
+function loadBotPosition() {
+    const filePath = path.join(__dirname, 'musicbot_pos.json');
+    try {
+        if (!fs.existsSync(filePath)) {
+            console.log(chalk.yellow("[INFO] No saved bot position found. Starting at default position."));
+            return false;
+        }
+
+        const locData = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+        const pos = locData.bot_position;
+        if (pos && pos.x !== undefined && pos.y !== undefined && pos.z !== undefined && pos.facing !== undefined) {
+            botPosition = pos;
+            console.log(chalk.green("[INFO] Bot position loaded successfully."));
+            return true;
+        }
+    } catch (err) {
+        console.error(chalk.red(`[ERROR] Failed to load bot position: ${err.message}`));
+    }
+    return false;
+}
+
 async function playback_loop() {
     play_event = true;
 
@@ -499,50 +539,17 @@ async function playback_loop() {
 }
 
 bot.on('ready', async (session) => {
+    botUserId = session.user_id;
     logWithTime(chalk.green, `\n[Music Bot Ready] Connected successfully!`);
     logWithTime(chalk.cyan, `Logged in as Bot ID: ${session.user_id}`);
-    
-    const posPath = path.join(__dirname, 'musicbot_pos.json');
-    if (fs.existsSync(posPath)) {
-        try {
-            const posData = JSON.parse(fs.readFileSync(posPath, 'utf8'));
-            const cleanStr = posData.bot_position.replace('}', '');
-            const parts = cleanStr.split(',').reduce((acc, part) => {
-                const [key, val] = part.split('=');
-                if (key && val) {
-                    acc[key.trim()] = val.trim().replace(/['"]/g, '');
-                }
-                return acc;
-            }, {});
-
-            setTimeout(async () => {
-                try {
-                    let facingDirection = parts.facing;
-                    if (facingDirection.toLowerCase() === 'frontright') facingDirection = 'FrontRight';
-                    if (facingDirection.toLowerCase() === 'frontleft') facingDirection = 'FrontLeft';
-                    if (facingDirection.toLowerCase() === 'backright') facingDirection = 'BackRight';
-                    if (facingDirection.toLowerCase() === 'backleft') facingDirection = 'BackLeft';
-
-                    await bot.player.teleport(
-                        session.user_id, 
-                        parseFloat(parts.x), 
-                        parseFloat(parts.y), 
-                        parseFloat(parts.z), 
-                        facingDirection
-                    );
-                    logWithTime(chalk.green, `[TELEPORT SUCCESS] Bot successfully moved to: x=${parts.x}, y=${parts.y}, z=${parts.z}, facing=${facingDirection}`);
-                    await bot.message.send(`[System] BeatlY On The Beat!`);
-                } catch (teleportErr) {
-                    console.error(chalk.red("[TELEPORT DELAYED ERROR] Failed inside timeout:"), teleportErr.message);
-                }
-            }, 2000);
-
-        } catch (e) {
-            console.error(chalk.red("[TELEPORT ERROR] Failed to parse musicbot_pos.json, using default fallback:"), e);
-            await bot.player.teleport(session.user_id, 0, 0, 0);
-        }
+    const positionLoaded = loadBotPosition();
+    if (positionLoaded) {
+        await bot.player.teleport(session.user_id, botPosition.x, botPosition.y, botPosition.z, botPosition.facing);
+        await bot.message.send("Made By BeatlY\n join us at:\nwwww.beatly.click");
     } else {
+        // إذا لم يجد موقع مخزن يبدأ من نقطة الصفر
         await bot.player.teleport(session.user_id, 0, 0, 0);
+        await bot.message.send("Made By BeatlY\n join us at:\nwwww.beatly.click");
     }
     await fetch_autoplay_playlist();
 
@@ -744,6 +751,55 @@ bot.on('chatCreate', async (user, message) => {
             if (song_queue.length === 0 && !currently_playing) check_and_start_autoplay_timer();
         } else {
             await bot.message.send("You don't have any songs in the queue to remove.");
+        }
+    }
+    if (user.username === config.owner || config.admins.includes(user.username)) {
+        
+        // أمر وضع الموقع الجديد
+        if (message.startsWith("!setpos")) {
+            console.log(`[DEBUG] Attempting to retrieve position for user ID: ${user.id}`);
+    
+            try {
+                // جلب قائمة اللاعبين المتواجدين في الغرفة من الكاش
+                const players = await bot.room.players.cache.get();
+    
+                // البحث عن إحداثيات الشخص اللي كتب الأمر
+                const playerEntry = players.find(p => p[0].id === user.id);
+    
+                if (!playerEntry) {
+                    console.error(`[ERROR] Failed to retrieve position for user ID: ${user.id}`);
+                    await bot.message.send("Failed to retrieve your position. Please move around and try again.");
+                    return;
+                }
+    
+                // استخراج الإحداثيات (المصفوفة تحتوي على بيانات اللاعب في خانة 0 والموقع في خانة 1)
+                const position = playerEntry[1];
+        
+                // حفظ الإحداثيات الجديدة في المتغير وفي الملف
+                botPosition = position;
+                saveBotPosition();
+    
+                await bot.message.send("Bot position set! Refreshing...");
+    
+                // انتظار ثانيتين قبل عمل الريفرش
+                await new Promise(resolve => setTimeout(resolve, 2000));
+    
+                // التأكد أن الـ ID الخاص بالبوت مسجل لتفادي توقف السكريبت
+                if (!botUserId) {
+                    console.error("[ERROR] Bot user ID is not set. Unable to teleport.");
+                    await bot.message.send("Error: Could not teleport bot. Please restart the bot and try again.");
+                    return;
+                }
+    
+                // عمل نقل (Teleport) الفوري للبوت للمكان الجديد المختار
+                await bot.player.teleport(botUserId, botPosition.x, botPosition.y, botPosition.z, botPosition.facing);
+    
+                await bot.message.send("Bot has been refreshed to the new position!");
+    
+            } catch (error) {
+                console.error(`[ERROR] Error fetching player data: ${error.message}`);
+                await bot.message.send("An error occurred while retrieving your position.");
+            }
         }
     }
 });
