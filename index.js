@@ -39,19 +39,15 @@ const downloadsFolder = path.join(__dirname, 'downloads');
 if (!fs.existsSync(downloadsFolder)) {
     fs.mkdirSync(downloadsFolder, { recursive: true });
 }
-
-
 let botPosition = null;
 let botUserId = null;
-let encode_process = null;
 let song_queue = [];
 let currently_playing = false;
 let current_track_info = null; 
 let play_event = false;
 let play_task = false;
-let master_ffmpeg = null;
-let decoder_process = null; // ده بديل لـ ffmpeg_process للأغاني
-let silence_process = null; // ده لإنتاج الصوت الصامت في الفواصلlet encode_process = null;
+let ffmpeg_process = null;
+let encode_process = null;
 
 let ffmpeg_stop_generation = 0;
 let ffmpeg_stop_promise = Promise.resolve();
@@ -63,7 +59,8 @@ let autoplay_tracks_raw = [];
 let autoplay_pool = [];       
 let is_autoplay_active = false; 
 let autoplay_timeout_handler = null; 
-let is_searching = false;           
+let is_searching = false;      
+let myBotId = null;     
 
 let playback_generation = 0;
 
@@ -82,65 +79,40 @@ function format_time(seconds) {
     return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
 }
 
-// 1. البث الرئيسي (دلوقتي بياخد MP3 جاهز وبيرفعه مباشرة بدون ضغط من أول وجديد)
-function start_master_stream() {
-    if (master_ffmpeg) return;
-    
-    const radio = config.radio || {};
-    const icecast_url = `icecast://source:${radio.password}@${radio.icecast_server}:${radio.icecast_port}${radio.mount_point}`;
-    
-    logWithTime(chalk.blue, "[STREAM] Starting stable stream...");
-    
-    // شلنا كل الـ Ice-specific params وسيبنا الأساسيات بس
-    master_ffmpeg = spawn('ffmpeg', [
-        '-re',
-        '-f', 'mp3',
-        '-i', 'pipe:0',
-        '-c:a', 'copy',
-        '-content_type', 'audio/mpeg',
-        '-f', 'mp3',
-        icecast_url
-    ]);
-
-    master_ffmpeg.on('error', (err) => {
-        logWithTime(chalk.red, `[STREAM] FFMPEG Error: ${err.message}`);
-    });
-
-    master_ffmpeg.on('close', (code) => {
-        logWithTime(chalk.red, `[STREAM] FFMPEG Closed (Code: ${code}). Retrying in 10s...`);
-        master_ffmpeg = null;
-        // زودنا الوقت لـ 10 ثواني عشان السيرفر يلحق يفتح الكونكشن صح
-        setTimeout(start_master_stream, 10000); 
-    });
-}
-
-// 2. الصمت (بيصنع MP3 صامت ويبعته)
-function start_silence() {
-    if (silence_process) return;
-    
-    silence_process = spawn('ffmpeg', [
-        '-re',
-        '-f', 'lavfi',
-        '-i', 'anullsrc=r=44100:cl=stereo',
-        '-c:a', 'libmp3lame', '-b:a', '128k', '-ar', '44100', '-ac', '2',
-        '-f', 'mp3',
-        'pipe:1'
-    ]);
-    
-    silence_process.stdout.on('data', (chunk) => {
-        if (master_ffmpeg && master_ffmpeg.stdin && master_ffmpeg.stdin.writable) {
-            master_ffmpeg.stdin.write(chunk);
-        }
-    });
-}
-
-// 3. دي زي ما هي مفيهاش تعديل بس عشان تتأكد إنها معاك
-function stop_silence() {
-    if (silence_process) {
-        silence_process.stdout.removeAllListeners('data');
-        try { silence_process.kill('SIGKILL'); } catch(e){}
-        silence_process = null;
+function saveBotPosition() {
+    const locData = {
+        bot_position: botPosition ? { x: botPosition.x, y: botPosition.y, z: botPosition.z, facing: botPosition.facing } : null,
+        admins: [config.owner]
+    };
+    const filePath = path.join(__dirname, 'musicbot_pos.json');
+    try {
+        fs.writeFileSync(filePath, JSON.stringify(locData, null, 2), { encoding: 'UTF-8' });
+        console.log(chalk.green("[INFO] Bot position saved successfully."));
+    } catch (error) {
+        console.error(chalk.red(`[ERROR] Failed to save bot position: ${error.message}`));
     }
+}
+
+// تحميل موقع البوت من ملف .json
+function loadBotPosition() {
+    const filePath = path.join(__dirname, 'musicbot_pos.json');
+    try {
+        if (!fs.existsSync(filePath)) {
+            console.log(chalk.yellow("[INFO] No saved bot position found. Starting at default position."));
+            return false;
+        }
+
+        const locData = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+        const pos = locData.bot_position;
+        if (pos && pos.x !== undefined && pos.y !== undefined && pos.z !== undefined && pos.facing !== undefined) {
+            botPosition = pos;
+            console.log(chalk.green("[INFO] Bot position loaded successfully."));
+            return true;
+        }
+    } catch (err) {
+        console.error(chalk.red(`[ERROR] Failed to load bot position: ${err.message}`));
+    }
+    return false;
 }
 
 async function fetch_autoplay_playlist() {
@@ -202,13 +174,16 @@ async function fetch_and_download_youtube(song_url, fallback_title = "Unknown", 
         const outputTemplate = path.join(downloadsFolder, `${uniqueId}_%(id)s.%(ext)s`);
         
         const downloadArgs = [
-            '--cookies', path.join(__dirname, 'cookies.txt'), 
+            '--cookies', '/root/cookies.txt',
             '--format', 'bestaudio/best',
+            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+            '--force-ipv4',
             '--no-playlist',
-            '--extractor-args', 'youtube:player_client=web', // 👈 إضافة دي لتهريب الطلب من الحظر
-            '--force-overwrites', // 👈 للتأكد إن الملفات مابتعملش تداخل
+            '--extractor-args', 'youtube:player_client=android,web', // 👈 إضافة دي لتهريب الطلب من الحظر
+            '--force-overwrites', // 👈 
+            '--add-header', 'Referer:https://www.youtube.com/', // اليوتيوب بيحب الـ Referer ده
             '--output', outputTemplate, 
-                    song_url
+            song_url
         ];
         
         const env = { ...process.env };
@@ -263,74 +238,12 @@ async function preload_next_song() {
     next_song.is_downloading = false;
 }
 
-
-async function stream_to_radioking(song_file_path, start_seconds = 0, payload = {}) {
-    if (!master_ffmpeg) start_master_stream();
-
-    return new Promise((resolve) => {
-        stop_silence(); // بنوقف الصمت أولاً
-
-        if (progress_interval) {
-            clearInterval(progress_interval);
-            progress_interval = null;
-        }
-
-        // أوامر التجهيز لمنع اللجلجة في التقديم
-        let args = [
-            '-re',
-            '-analyzeduration', '0', 
-            '-probesize', '32'
-        ];
-        
-        if (start_seconds > 0) {
-            args.push('-ss', start_seconds.toString());
-        }
-
-        // تحويل الأغنية لـ MP3 وإرسالها للماستر
-        args.push(
-            '-i', song_file_path,
-            '-c:a', 'libmp3lame', '-b:a', '128k', '-ar', '44100', '-ac', '2',
-            '-f', 'mp3',
-            'pipe:1'
-        );
-
-        const env = { ...process.env };
-        decoder_process = spawn('ffmpeg', args, { env });
-
-        decoder_process.stdout.on('data', (chunk) => {
-            if (master_ffmpeg && master_ffmpeg.stdin && master_ffmpeg.stdin.writable) {
-                master_ffmpeg.stdin.write(chunk);
-            }
-        });
-
-        start_time_ms = Date.now();
-        elapsed_paused_seconds = start_seconds;
-
-        progress_interval = setInterval(() => {
-            const current_elapsed = elapsed_paused_seconds + Math.floor((Date.now() - start_time_ms) / 1000);
-            if (current_track_info) {
-                current_track_info.elapsed = current_elapsed;
-                if (!is_autoplay_active) {
-                    fs.writeFileSync(current_song_file, JSON.stringify(current_track_info, null, 4));
-                }
-            }
-        }, 1500);
-
-        decoder_process.on('close', () => {
-            clearInterval(progress_interval);
-            decoder_process = null;
-            start_silence(); 
-            resolve();
-        });
-    });
-}
-
 async function stop_current_ffmpeg({ timeoutMs = 1500 } = {}) {
-    const proc = decoder_process;
+    const proc = ffmpeg_process;
     if (!proc) return;
 
     const genAtStop = ++ffmpeg_stop_generation;
-    decoder_process = proc;
+    ffmpeg_process = proc;
 
     if (progress_interval) {
         clearInterval(progress_interval);
@@ -347,8 +260,7 @@ async function stop_current_ffmpeg({ timeoutMs = 1500 } = {}) {
                 proc.removeAllListeners('error');
             } catch (e) {}
             if (ffmpeg_stop_generation === genAtStop) {
-                decoder_process = null;
-                start_silence(); // لو عملنا سكيب، شغل الصمت لحد ما الأغنية الجديدة تبدأ
+                ffmpeg_process = null;
             }
             resolve();
         };
@@ -356,13 +268,108 @@ async function stop_current_ffmpeg({ timeoutMs = 1500 } = {}) {
         proc.once('close', () => finish());
         proc.once('error', () => finish());
 
-        try { proc.kill('SIGTERM'); } catch (e) {}
+        try {
+            proc.kill('SIGTERM');
+        } catch (e) {}
 
         setTimeout(() => {
             if (done) return;
-            try { proc.kill('SIGKILL'); } catch (e) {}
+            try {
+                proc.kill('SIGKILL');
+            } catch (e) {}
             finish();
         }, timeoutMs);
+    });
+}
+
+async function stream_to_radioking(song_file_path, start_seconds = 0, payload = {}) {
+    if (!song_file_path || !fs.existsSync(song_file_path)) {
+        console.error(`\x1b[31m[FFMPEG ERROR] File path is invalid or does not exist: ${song_file_path}\x1b[0m`);
+        return;
+    }
+
+    const radio = config.radio || {};
+    const icecast_url = `icecast://${radio.username}:${radio.password}@${radio.icecast_server}:${radio.icecast_port}${radio.mount_point}`;
+
+    await ffmpeg_stop_promise;
+
+    return new Promise((resolve) => {
+        if (progress_interval) {
+            clearInterval(progress_interval);
+            progress_interval = null;
+        }
+
+        const inputBase = [
+            '-re',
+            '-analyzeduration', '0',
+            '-probesize', '32'
+        ];
+
+        const outputLowLatency = [
+            '-bufsize', '512k',
+            '-flush_packets', '1'
+        ];
+
+        const mode = payload && payload.mode ? payload.mode : (start_seconds === 0 ? 'copy' : 'reencode');
+        let args;
+
+        if (mode === 'copy') {
+            args = [
+                '-re',
+                '-i', song_file_path,
+                '-acodec', 'libmp3lame',
+                '-b:a', '128k',
+                '-ar', '44100',
+                '-ac', '2',
+                '-f', 'mp3',
+                '-content_type', 'audio/mpeg',
+                '-bufsize', '512k',
+                '-flush_packets', '1',
+                icecast_url
+            ];
+        } else {
+            args = [
+                ...inputBase,
+                '-ss', start_seconds.toString(),
+                '-i', song_file_path,
+                '-acodec', 'libmp3lame',
+                '-ab', '128k',
+                '-ar', '44100',
+                '-ac', '2',
+                '-f', 'mp3',
+                '-content_type', 'audio/mpeg',
+                ...outputLowLatency,
+                '-flush_packets', '1',
+                icecast_url
+            ];
+        }
+
+        const env = { ...process.env };
+        ffmpeg_process = spawn('ffmpeg', args, { env });
+
+        ffmpeg_process.stderr.on('data', (data) => {
+            const msg = data.toString().trim();
+            if (!msg) return;
+            console.log(`[FFMPEG] ${msg}`);
+        });
+
+        start_time_ms = Date.now();
+        elapsed_paused_seconds = start_seconds;
+
+        progress_interval = setInterval(() => {
+            const current_elapsed = elapsed_paused_seconds + Math.floor((Date.now() - start_time_ms) / 1000);
+            if (current_track_info) {
+                current_track_info.elapsed = current_elapsed;
+                if (!is_autoplay_active) {
+                    fs.writeFileSync(current_song_file, JSON.stringify(current_track_info, null, 4));
+                }
+            }
+        }, 1500);
+
+        ffmpeg_process.on('close', () => {
+            clearInterval(progress_interval);
+            resolve();
+        });
     });
 }
 
@@ -412,48 +419,14 @@ function interrupt_autoplay() {
 
     ffmpeg_stop_promise = stop_current_ffmpeg({ timeoutMs: 2000 });
 
-    
+    if (encode_process) {
+        try { encode_process.kill(); } catch (e) {}
+    }
 
     currently_playing = false;
     current_track_info = null;
     play_event = false;
     play_task = false;
-}
-
-function saveBotPosition() {
-    const locData = {
-        bot_position: botPosition ? { x: botPosition.x, y: botPosition.y, z: botPosition.z, facing: botPosition.facing } : null,
-        admins: [config.owner]
-    };
-    const filePath = path.join(__dirname, 'musicbot_pos.json');
-    try {
-        fs.writeFileSync(filePath, JSON.stringify(locData, null, 2), { encoding: 'UTF-8' });
-        console.log(chalk.green("[INFO] Bot position saved successfully."));
-    } catch (error) {
-        console.error(chalk.red(`[ERROR] Failed to save bot position: ${error.message}`));
-    }
-}
-
-// تحميل موقع البوت من ملف .json
-function loadBotPosition() {
-    const filePath = path.join(__dirname, 'musicbot_pos.json');
-    try {
-        if (!fs.existsSync(filePath)) {
-            console.log(chalk.yellow("[INFO] No saved bot position found. Starting at default position."));
-            return false;
-        }
-
-        const locData = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-        const pos = locData.bot_position;
-        if (pos && pos.x !== undefined && pos.y !== undefined && pos.z !== undefined && pos.facing !== undefined) {
-            botPosition = pos;
-            console.log(chalk.green("[INFO] Bot position loaded successfully."));
-            return true;
-        }
-    } catch (err) {
-        console.error(chalk.red(`[ERROR] Failed to load bot position: ${err.message}`));
-    }
-    return false;
 }
 
 async function playback_loop() {
@@ -564,10 +537,26 @@ async function playback_loop() {
     check_and_start_autoplay_timer();
 }
 
+function save_loc_data(botPositionString) {
+    const posPath = path.join(__dirname, 'musicbot_pos.json');
+    
+    const loc_data = {
+        bot_position: botPositionString,
+        ctoggle: false,
+        nightcore: false,
+        daycore: false,
+        admins: [config.owner] // 👈 اتأكد إن الكلمة دي مكتوبة config مش شي تاني
+    };
+
+    fs.writeFileSync(posPath, JSON.stringify(loc_data, null, 4));
+}
+
 bot.on('ready', async (session) => {
-    botUserId = session.user_id;
     logWithTime(chalk.green, `\n[Music Bot Ready] Connected successfully!`);
     logWithTime(chalk.cyan, `Logged in as Bot ID: ${session.user_id}`);
+    myBotId = session.user_id;
+    const posPath = path.join(__dirname, 'musicbot_pos.json');
+    botUserId = session.user_id;
     const positionLoaded = loadBotPosition();
     if (positionLoaded) {
         await bot.player.teleport(session.user_id, botPosition.x, botPosition.y, botPosition.z, botPosition.facing);
@@ -578,7 +567,6 @@ bot.on('ready', async (session) => {
         await bot.message.send("Made By BeatlY\n join us at:\nwwww.beatly.click");
     }
     await fetch_autoplay_playlist();
-    start_master_stream();
 
     if (fs.existsSync(current_song_file)) {
         try {
@@ -639,7 +627,7 @@ bot.on('chatCreate', async (user, message) => {
 
         await bot.whisper.send(user.id,`🔍 Searching for @${user.username}... \n[ ${songQuery} ]`);
 
-        const metaArgs = ['--cookies', path.join(__dirname, 'cookies.txt'), '--dump-json', `ytsearch1:${songQuery}`];
+        const metaArgs = ['--cookies', '/root/cookies.txt', '--dump-json', `ytsearch1:${songQuery}`];
         const env = { ...process.env };
 
         let metaDataStr = '';
@@ -733,7 +721,9 @@ bot.on('chatCreate', async (user, message) => {
         clearInterval(progress_interval);
         ffmpeg_stop_promise = stop_current_ffmpeg({ timeoutMs: 1500 });
 
-        
+        if (encode_process) {
+            try { encode_process.kill(); } catch (e) {}
+        }
 
         if (fs.existsSync(current_song_file)) { try { fs.unlinkSync(current_song_file); } catch(e){} }
         
@@ -781,7 +771,7 @@ bot.on('chatCreate', async (user, message) => {
     if (user.username === config.owner || config.admins.includes(user.username)) {
         
         // أمر وضع الموقع الجديد
-        if (message.startsWith("!setpos")) {
+        if (message.startsWith("/setpos")) {
             console.log(`[DEBUG] Attempting to retrieve position for user ID: ${user.id}`);
     
             try {
@@ -803,7 +793,7 @@ bot.on('chatCreate', async (user, message) => {
                 // حفظ الإحداثيات الجديدة في المتغير وفي الملف
                 botPosition = position;
                 saveBotPosition();
-    
+
                 await bot.message.send("Bot position set! Refreshing...");
     
                 // انتظار ثانيتين قبل عمل الريفرش
