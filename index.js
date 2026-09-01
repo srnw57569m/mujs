@@ -174,16 +174,13 @@ async function fetch_and_download_youtube(song_url, fallback_title = "Unknown", 
         const outputTemplate = path.join(downloadsFolder, `${uniqueId}_%(id)s.%(ext)s`);
         
         const downloadArgs = [
-            '--cookies', '/root/cookies.txt',
-            '--format', 'bestaudio/best',
-            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-            '--force-ipv4',
-            '--no-playlist',
-            '--extractor-args', 'youtube:player_client=android,web', // 👈 إضافة دي لتهريب الطلب من الحظر
-            '--force-overwrites', // 👈 
-            '--add-header', 'Referer:https://www.youtube.com/', // اليوتيوب بيحب الـ Referer ده
-            '--output', outputTemplate, 
-            song_url
+        '--cookies', path.join(__dirname, 'cookies.txt'),
+        '--js-runtimes', 'deno,node',
+        '--format', 'ba/ba*',
+        '--no-playlist',
+        '--force-overwrites',
+        '--output', outputTemplate,
+        song_url
         ];
         
         const env = { ...process.env };
@@ -450,6 +447,7 @@ async function playback_loop() {
                 if (!result.file_path) {
                     logWithTime(chalk.red, `[AUTOPLAY] Failed to download track: ${chosen_track.title}. Skipping...`);
                     currently_playing = false;
+                    await new Promise(r => setTimeout(r, 5000));
                     continue;
                 }
 
@@ -508,6 +506,7 @@ async function playback_loop() {
             if (!result.file_path) {
                 await bot.message.send(`❌ Failed to download: "${next_song.title}". Skipping to next...`);
                 currently_playing = false;
+                await new Promise(r => setTimeout(r, 5000));
                 continue;
             }
 
@@ -627,7 +626,12 @@ bot.on('chatCreate', async (user, message) => {
 
         await bot.whisper.send(user.id,`🔍 Searching for @${user.username}... \n[ ${songQuery} ]`);
 
-        const metaArgs = ['--cookies', '/root/cookies.txt', '--dump-json', `ytsearch1:${songQuery}`];
+        const metaArgs = [
+        '--cookies', path.join(__dirname, 'cookies.txt'),
+        '--js-runtimes', 'deno,node',
+        '--dump-json',
+        `ytsearch1:${songQuery}`
+        ];
         const env = { ...process.env };
 
         let metaDataStr = '';
