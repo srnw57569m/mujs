@@ -15,7 +15,69 @@ if (!fs.existsSync(configPath)) {
     console.error(chalk.red("[ERROR] Configuration file (config.json) not found!"));
     process.exit(1);
 }
-const config = require(configPath);
+let config = require(configPath);
+
+// 🌐 نظام الترجمات والردود باللغتين
+const messages = {
+    ar: {
+        WELCOME_SET_LANG: (owner) => `👋 أهلاً بكم!\nيرجى من مالك الغرفة (@${owner}) تحديد لغة البوت الأساسية عن طريق كتابة: language ar أو language en\n\nWelcome! Room owner (@${owner}) please set the bot language by typing: language ar or language en`,
+        LANG_SUCCESS: "✅ تم تحديث لغة البوت إلى العربية بنجاح!",
+        SEARCHING: (user, query) => `🔍 جاري البحث لـ @${user}... \n[ ${query} ]`,
+        FOUND: (title, duration, pos, user) => `✅ تم العثور عليها!\nالعنوان: \n"${title}"\n⏱️ المدة: [${duration}]\n🔢 الترتيب في الانتظار: #${pos}\n👤 طلب بواسطة: @${user}`,
+        AUTOPLAY_INTERRUPT: (user) => `⚠️ تم إيقاف التشغيل التلقائي لإعطاء الأولوية لـ @${user}`,
+        QUEUE_EMPTY: "طابور الأغاني فارغ حالياً.",
+        QUEUE_TITLE: (count) => `قائمة الانتظار الحالية (${count} أغاني):\n\n`,
+        MORE_TRACKS: (count) => `... و ${count} أغاني أخرى.`,
+        NO_NP: "لا يوجد أغنية شغال حالياً.",
+        NOW_PLAYING: (title, bar, current, total, owner) => `🎵 شغال الآن: \n"${title}"\n${bar}\n⏱️ الوقت: [${current} / ${total}]\n👤 طلب بواسطة: ${owner}`,
+        NO_SKIP: "لا توجد أغنية شغال لتخطيها.",
+        SKIPPED: (title, user, owner) => `⏭️ تم التخطي: \n"${title}"\n👤 بواسطة: @${user}\n📥 صاحب الطلب الأصلي: ${owner}`,
+        CLEAR_SUCCESS: "تم مسح طابور الأغاني بالكامل.",
+        CLEAR_OWNER_ONLY: "عذراً، مالك البوت فقط من يستطيع مسح قائمة الانتظار.",
+        DEL_SUCCESS: (title) => `تم إزالة أغنيتك: "${title}" من قائمة الانتظار.`,
+        DEL_NO_SONGS: "ليس لديك أي أغاني في قائمة الانتظار لإزالتها.",
+        DOWNLOAD_FAILED: (title) => `❌ فشل تحميل: "${title}". جاري تخطيها للأغنية التالية...`,
+        AUTOPLAY_ARMED: (sec) => `📻 [تشغيل تلقائي] القائمة فارغة! سيتم بدء التشغيل التلقائي خلال ${sec} ثانية...`,
+        AUTOPLAY_START: "📻 [تشغيل تلقائي] تم بدء محرك التشغيل التلقائي الآن...",
+        AUTOPLAY_NP: (title) => `📻 [تشغيل تلقائي] شغال الآن: "${title}"`,
+        NOW_PLAYING_MSG: (title, owner) => `🎵 شغال الآن: \n"${title}" \nطلب بواسطة @${owner}`
+    },
+    en: {
+        WELCOME_SET_LANG: (owner) => `👋 Welcome!\nRoom owner (@${owner}) please select the bot language by typing: language ar or language en`,
+        LANG_SUCCESS: "✅ Bot language updated to English successfully!",
+        SEARCHING: (user, query) => `🔍 Searching for @${user}... \n[ ${query} ]`,
+        FOUND: (title, duration, pos, user) => `✅ Found! Title: \n"${title}"\n⏱️ Duration: [${duration}]\n🔢 Queue Position: #${pos}\n👤 Requested by: @${user}`,
+        AUTOPLAY_INTERRUPT: (user) => `⚠️ Interrupting autoplay to prioritize @${user}`,
+        QUEUE_EMPTY: "The music queue is currently empty.",
+        QUEUE_TITLE: (count) => `Current Queue (${count} songs):\n\n`,
+        MORE_TRACKS: (count) => `... and ${count} more tracks.`,
+        NO_NP: "No song is currently playing right now.",
+        NOW_PLAYING: (title, bar, current, total, owner) => `🎵 Now Playing: \n"${title}"\n${bar}\n⏱️ Time: [${current} / ${total}]\n👤 Requested by: ${owner}`,
+        NO_SKIP: "There is no song playing to skip.",
+        SKIPPED: (title, user, owner) => `⏭️ Skipped: \n"${title}"\n👤 Skipped by: @${user}\n📥 Originally requested by: ${owner}`,
+        CLEAR_SUCCESS: "Music queue has been cleared completely.",
+        CLEAR_OWNER_ONLY: "Only the bot owner can clear the queue.",
+        DEL_SUCCESS: (title) => `Removed your song: "${title}" from the queue.`,
+        DEL_NO_SONGS: "You don't have any songs in the queue to remove.",
+        DOWNLOAD_FAILED: (title) => `❌ Failed to download: "${title}". Skipping to next...`,
+        AUTOPLAY_ARMED: (sec) => `📻 [AUTOPLAY] Queue is empty. Timer armed! Will launch Autoplay in ${sec} seconds...`,
+        AUTOPLAY_START: "📻 [AUTOPLAY] Timer expired. Booting Auto-Play engine now...",
+        AUTOPLAY_NP: (title) => `📻 [Auto-Play] Now Playing: "${title}"`,
+        NOW_PLAYING_MSG: (title, owner) => `🎵 Now Playing: \n"${title}" \nRequested by @${owner}`
+    }
+};
+
+function getLang() {
+    return (config.language && messages[config.language]) ? config.language : 'en';
+}
+
+function saveConfig() {
+    try {
+        fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+    } catch (e) {
+        console.error(chalk.red(`[ERROR] Failed to update config.json: ${e.message}`));
+    }
+}
 
 const bot = new Highrise({
     intents: [
@@ -93,7 +155,6 @@ function saveBotPosition() {
     }
 }
 
-// تحميل موقع البوت من ملف .json
 function loadBotPosition() {
     const filePath = path.join(__dirname, 'musicbot_pos.json');
     try {
@@ -152,17 +213,14 @@ async function fetch_autoplay_playlist() {
     });
 }
 
-// 🚀 سحب الصوت الخام وتعديل نظام الحماية لملفات الـ Preload
 async function fetch_and_download_youtube(song_url, fallback_title = "Unknown", fallback_duration = 180) {
     return new Promise((resolve) => {
-        // تنظيف فولدر التحميلات القديمة مع حماية الأغنية الشغالة والأغاني الجاهزة في الكييو
         const oldFiles = fs.readdirSync(downloadsFolder);
         for (const file of oldFiles) { 
             try { 
                 const filePath = path.join(downloadsFolder, file);
                 if (current_track_info && current_track_info.file_path === filePath) continue;
                 
-                // تحديث: حماية أي ملف تم تحميله مسبقاً وموجود في الطابور حالياً
                 const isPreloaded = song_queue.some(s => s.file_path === filePath);
                 if (isPreloaded) continue;
 
@@ -174,13 +232,13 @@ async function fetch_and_download_youtube(song_url, fallback_title = "Unknown", 
         const outputTemplate = path.join(downloadsFolder, `${uniqueId}_%(id)s.%(ext)s`);
         
         const downloadArgs = [
-        '--cookies', path.join(__dirname, 'cookies.txt'),
-        '--js-runtimes', 'deno,node',
-        '--format', 'ba/ba*',
-        '--no-playlist',
-        '--force-overwrites',
-        '--output', outputTemplate,
-        song_url
+            '--cookies', path.join(__dirname, 'cookies.txt'),
+            '--js-runtimes', 'deno,node',
+            '--format', 'ba/ba*',
+            '--no-playlist',
+            '--force-overwrites',
+            '--output', outputTemplate,
+            song_url
         ];
         
         const env = { ...process.env };
@@ -212,13 +270,10 @@ async function fetch_and_download_youtube(song_url, fallback_title = "Unknown", 
     });
 }
 
-// 🌐 فانكشن جديدة للتحميل المسبق للأغنية التالية في الطابور في الخلفية
 async function preload_next_song() {
     if (song_queue.length === 0) return;
     
-    const next_song = song_queue[0]; // جلب أول أغنية منتظرة في الكييو
-    
-    // لو متنزلة فعلاً أو جاري تحميلها حالياً، اخرج
+    const next_song = song_queue[0];
     if (next_song.file_path || next_song.is_downloading) return;
 
     next_song.is_downloading = true;
@@ -381,9 +436,11 @@ async function check_and_start_autoplay_timer() {
 
     const timer_generation = playback_generation;
     const wait_seconds = config.autoplay_timer !== undefined ? parseInt(config.autoplay_timer) : 60;
+    const lang = getLang();
+
     logWithTime(chalk.magenta, `[AUTOPLAY] Queue is empty. Timer armed! Will launch Autoplay in ${wait_seconds} seconds...`);
     try {
-        await bot.message.send(`📻 [AUTOPLAY] Queue is empty. Timer armed! Will launch Autoplay in ${wait_seconds} seconds...`);
+        await bot.message.send(messages[lang].AUTOPLAY_ARMED(wait_seconds));
     } catch (err) {
         console.error("Failed to send autoplay timer message:", err);
     }
@@ -398,7 +455,7 @@ async function check_and_start_autoplay_timer() {
         play_task = true;
         is_autoplay_active = true;
         logWithTime(chalk.green, `[AUTOPLAY] Timer expired. Booting Auto-Play engine now...`);
-        bot.message.send(`📻 [AUTOPLAY] Timer expired. Booting Auto-Play engine now...`);
+        bot.message.send(messages[getLang()].AUTOPLAY_START);
         playback_loop();
     }, wait_seconds * 1000);
 }
@@ -430,6 +487,7 @@ async function playback_loop() {
     play_event = true;
 
     while (play_event) {
+        const lang = getLang();
         if (song_queue.length === 0) {
             if (is_autoplay_active && autoplay_tracks_raw.length > 0) {
                 if (autoplay_pool.length === 0) autoplay_pool = [...autoplay_tracks_raw];
@@ -452,9 +510,8 @@ async function playback_loop() {
                 }
 
                 current_track_info = { title: result.real_title, owner: "AutoPlay_System", duration: result.real_duration, file_path: result.file_path, elapsed: 0 };
-                await bot.message.send(`📻 [Auto-Play] Now Playing: "${current_track_info.title}"`);
+                await bot.message.send(messages[lang].AUTOPLAY_NP(current_track_info.title));
                 
-                // تجهيز الأغنية التالية لو حد ضاف حاجة فجأة في الكييو
                 preload_next_song();
 
                 await stream_to_radioking(result.file_path, 0, { mode: 'copy' });
@@ -470,10 +527,8 @@ async function playback_loop() {
             save_queue();
             
             currently_playing = true;
-            
             let result = null;
 
-            // إذا تم تحميل الأغنية مسبقاً، نأخذ ملفها مباشرة بدون تكرار التحميل
             if (next_song.file_path && fs.existsSync(next_song.file_path)) {
                 logWithTime(chalk.green, `[PLAYBACK] Instantly launching preloaded track: "${next_song.title}"`);
                 result = {
@@ -482,7 +537,6 @@ async function playback_loop() {
                     real_duration: next_song.duration
                 };
             } else {
-                // لو كانت لسه بتتحمل في الخلفية وخلصت الأغنية القديمة بسرعة، ننتظرها تخلص تحميل
                 if (next_song.is_downloading) {
                     logWithTime(chalk.yellow, `[PLAYBACK] Next song is finishing its preload cache, holding for a few moments...`);
                     while (next_song.is_downloading) {
@@ -497,14 +551,13 @@ async function playback_loop() {
                     }
                 }
                 
-                // حماية أخيرة: لو منزلتش خالص، حملها عادي بالطريقة العادية
                 if (!result) {
                     result = await fetch_and_download_youtube(next_song.url, next_song.title, next_song.duration);
                 }
             }
 
             if (!result.file_path) {
-                await bot.message.send(`❌ Failed to download: "${next_song.title}". Skipping to next...`);
+                await bot.message.send(messages[lang].DOWNLOAD_FAILED(next_song.title));
                 currently_playing = false;
                 await new Promise(r => setTimeout(r, 5000));
                 continue;
@@ -514,9 +567,8 @@ async function playback_loop() {
             
             fs.writeFileSync(current_song_file, JSON.stringify(current_track_info, null, 4));
 
-            await bot.message.send(`🎵 Now Playing: \n"${current_track_info.title}" \nRequested by @${current_track_info.owner}`);
+            await bot.message.send(messages[lang].NOW_PLAYING_MSG(current_track_info.title, current_track_info.owner));
             
-            // 🔥 أهم خطوة: بدأنا تشغيل الأغنية الحالية؟ فوراً نبدأ نحمل الأغنية اللي بعدها في الخلفية
             preload_next_song();
 
             await stream_to_radioking(result.file_path, 0, { mode: 'copy' });
@@ -536,35 +588,23 @@ async function playback_loop() {
     check_and_start_autoplay_timer();
 }
 
-function save_loc_data(botPositionString) {
-    const posPath = path.join(__dirname, 'musicbot_pos.json');
-    
-    const loc_data = {
-        bot_position: botPositionString,
-        ctoggle: false,
-        nightcore: false,
-        daycore: false,
-        admins: [config.owner] // 👈 اتأكد إن الكلمة دي مكتوبة config مش شي تاني
-    };
-
-    fs.writeFileSync(posPath, JSON.stringify(loc_data, null, 4));
-}
-
 bot.on('ready', async (session) => {
     logWithTime(chalk.green, `\n[Music Bot Ready] Connected successfully!`);
     logWithTime(chalk.cyan, `Logged in as Bot ID: ${session.user_id}`);
     myBotId = session.user_id;
-    const posPath = path.join(__dirname, 'musicbot_pos.json');
     botUserId = session.user_id;
     const positionLoaded = loadBotPosition();
     if (positionLoaded) {
         await bot.player.teleport(session.user_id, botPosition.x, botPosition.y, botPosition.z, botPosition.facing);
-        await bot.message.send("Made By BeatlY\n join us at:\nwwww.beatly.click");
     } else {
-        // إذا لم يجد موقع مخزن يبدأ من نقطة الصفر
         await bot.player.teleport(session.user_id, 0, 0, 0);
-        await bot.message.send("Made By BeatlY\n join us at:\nwwww.beatly.click");
     }
+
+    // 🔔 إرسال تنبيه للأونر بتحديد اللغة إذا لم تكن محددة مسبقاً
+    if (!config.language || (config.language !== 'ar' && config.language !== 'en')) {
+        await bot.message.send(messages.ar.WELCOME_SET_LANG(config.owner));
+    }
+
     await fetch_autoplay_playlist();
 
     if (fs.existsSync(current_song_file)) {
@@ -609,9 +649,51 @@ bot.on('chatCreate', async (user, message) => {
     logWithTime(chalk.yellow, `[CHAT] @${user.username}: ${message}`);
     const lowerMessage = message.toLowerCase().trim();
 
-    if (lowerMessage.startsWith("/play ") || lowerMessage.startsWith("/p ")) {
-        const offset = lowerMessage.startsWith("/play ") ? 6 : 3;
-        const songQuery = message.substring(offset).trim();
+    // 🌐 أمر تغيير/تحديد اللغة المخصص للأونر (يدعم الأوامر بالعربي والانجليزي)
+    if (user.username.toLowerCase() === config.owner.toLowerCase()) {
+        const langKeywords = ["/lang", "language", "تغيير اللغة", "تغير اللغة", "اللغة", "اللوغة","تغيير اللغه","تغير اللغه","اللغه","اللغة"];
+        let selectedLang = null;
+
+        if (lowerMessage === "ar" || lowerMessage === "en") {
+            selectedLang = lowerMessage;
+        } else {
+            for (const kw of langKeywords) {
+                if (lowerMessage.startsWith(kw)) {
+                    const arg = lowerMessage.replace(kw, "").trim();
+                    if (arg === "ar" || arg === "عربي" || arg === "arabic") selectedLang = "ar";
+                    if (arg === "en" || arg === "انجليزي" || arg === "إنجليزي" || arg === "english") selectedLang = "en";
+                }
+            }
+        }
+
+        if (selectedLang) {
+            config.language = selectedLang;
+            saveConfig();
+            await bot.message.send(messages[selectedLang].LANG_SUCCESS);
+            return;
+        }
+    }
+
+    // ⛔ منع استخدام أي أمر للجميع وإرسال تنبيه لو لم يقم الأونر بتحديد اللغة بعد
+    if (!config.language || (config.language !== 'ar' && config.language !== 'en')) {
+        const isCommandAttempt = lowerMessage.startsWith("/") || 
+            ["شغل", "تشغيل", "الانتظار", "الطابور", "شغال", "الان", "تخطي", "سكيب", "تفريغ", "مسح", "حذف"].some(k => lowerMessage.startsWith(k));
+
+        if (isCommandAttempt) {
+            await bot.message.send(`⚠️ لا يمكن استخدام البوت الآن! يجب على مالك الغرفة (@${config.owner}) تحديد اللغة أولاً (أرسل: language ar أو language en).\n\n⚠️ Bot unavailable! Room owner (@${config.owner}) must set the language first (type: language ar or language en).`);
+            return;
+        }
+    }
+
+    const lang = getLang();
+
+    // 🎵 أمر التشغيل (يدعم العربي والإنجليزي)
+    if (lowerMessage.startsWith("/play ") || lowerMessage.startsWith("/p ") || lowerMessage.startsWith("شغل ") || lowerMessage.startsWith("تشغيل ")) {
+        let songQuery = "";
+        if (lowerMessage.startsWith("/play ")) songQuery = message.substring(6).trim();
+        else if (lowerMessage.startsWith("/p ")) songQuery = message.substring(3).trim();
+        else if (lowerMessage.startsWith("شغل ")) songQuery = message.substring(4).trim();
+        else if (lowerMessage.startsWith("تشغيل ")) songQuery = message.substring(6).trim();
 
         if (!songQuery) return;
 
@@ -620,17 +702,17 @@ bot.on('chatCreate', async (user, message) => {
         
         if (is_autoplay_active === true) {
             logWithTime(chalk.yellow, `[AUTOPLAY] Interrupting autoplay to prioritize @${user.username}`);
-            await bot.message.send(`⚠️ Interrupting autoplay to prioritize @${user.username}`);
+            await bot.message.send(messages[lang].AUTOPLAY_INTERRUPT(user.username));
             interrupt_autoplay();
         }
 
-        await bot.whisper.send(user.id,`🔍 Searching for @${user.username}... \n[ ${songQuery} ]`);
+        await bot.whisper.send(user.id, messages[lang].SEARCHING(user.username, songQuery));
 
         const metaArgs = [
-        '--cookies', path.join(__dirname, 'cookies.txt'),
-        '--js-runtimes', 'deno,node',
-        '--dump-json',
-        `ytsearch1:${songQuery}`
+            '--cookies', path.join(__dirname, 'cookies.txt'),
+            '--js-runtimes', 'deno,node',
+            '--dump-json',
+            `ytsearch1:${songQuery}`
         ];
         const env = { ...process.env };
 
@@ -659,9 +741,8 @@ bot.on('chatCreate', async (user, message) => {
             save_queue();
             is_searching = false;
 
-            await bot.message.send(`✅ Found! Title: \n"${finalTitle}"\n⏱️ Duration: [${format_time(finalDuration)}]\n🔢 Queue Position: #${song_queue.length}\n👤 Requested by: @${user.username}`);
+            await bot.message.send(messages[getLang()].FOUND(finalTitle, format_time(finalDuration), song_queue.length, user.username));
 
-            // تشغيل التحميل المسبق فوراً إذا أصبحت الأغنية هي التالية في الانتظار
             preload_next_song();
 
             play_event = true;
@@ -672,28 +753,30 @@ bot.on('chatCreate', async (user, message) => {
         });
     }
     
-    else if (lowerMessage === "/q" || lowerMessage === "/queue") {
+    // 📜 أمر عرض الطابور
+    else if (lowerMessage === "/q" || lowerMessage === "/queue" || lowerMessage === "الانتظار" || lowerMessage === "الطابور") {
         if (song_queue.length === 0) {
-            await bot.message.send("The music queue is currently empty.");
+            await bot.message.send(messages[lang].QUEUE_EMPTY);
             return;
         }
         
-        let queue_message = `Current Queue (${song_queue.length} songs):\n\n`;
+        let queue_message = messages[lang].QUEUE_TITLE(song_queue.length);
         song_queue.slice(0, 5).forEach((song, idx) => {
             const cleanTitle = song.title.length > 35 ? song.title.substring(0, 35) + "..." : song.title;
             queue_message += `${idx + 1} - 🔽\n"${cleanTitle}"\n👤 Req by: @${song.owner}\n\n`;
         });
         
         if (song_queue.length > 5) {
-            queue_message += `... and ${song_queue.length - 5} more tracks.`;
+            queue_message += messages[lang].MORE_TRACKS(song_queue.length - 5);
         }
         
-        await bot.whisper.send(user.id,queue_message);
+        await bot.whisper.send(user.id, queue_message);
     }
 
-    else if (lowerMessage === "/np") {
+    // 🎧 أمر معرفة الأغنية الحالية
+    else if (lowerMessage === "/np" || lowerMessage === "شغال" || lowerMessage === "الان") {
         if (!currently_playing || !current_track_info) {
-            await bot.message.send("No song is currently playing right now.");
+            await bot.message.send(messages[lang].NO_NP);
             return;
         }
 
@@ -710,17 +793,18 @@ bot.on('chatCreate', async (user, message) => {
         }
 
         const display_owner = is_autoplay_active ? "System (Auto-Play)" : `@${current_track_info.owner}`;
-        await bot.whisper.send(user.id,`🎵 Now Playing: \n"${current_track_info.title}"\n${progress_bar}\n⏱️ Time: [${format_time(current_elapsed)} / ${format_time(total_duration)}]\n👤 Requested by: ${display_owner}`);
+        await bot.whisper.send(user.id, messages[lang].NOW_PLAYING(current_track_info.title, progress_bar, format_time(current_elapsed), format_time(total_duration), display_owner));
     }
     
-    else if (lowerMessage === "/skip") {
+    // ⏭️ أمر تخطي الأغنية
+    else if (lowerMessage === "/skip" || lowerMessage === "تخطي" || lowerMessage === "سكيب") {
         if (!currently_playing || !current_track_info) {
-            await bot.message.send("There is no song playing to skip.");
+            await bot.message.send(messages[lang].NO_SKIP);
             return;
         }
         
         const display_owner = is_autoplay_active ? "System (Auto-Play)" : `@${current_track_info.owner}`;
-        await bot.message.send(`⏭️ Skipped: \n"${current_track_info.title}"\n👤 Skipped by: @${user.username}\n📥 Originally requested by: ${display_owner}`);
+        await bot.message.send(messages[lang].SKIPPED(current_track_info.title, user.username, display_owner));
         
         clearInterval(progress_interval);
         ffmpeg_stop_promise = stop_current_ffmpeg({ timeoutMs: 1500 });
@@ -736,9 +820,9 @@ bot.on('chatCreate', async (user, message) => {
         playback_generation++;
     }
 
-    else if (lowerMessage === "/clearq") {
+    // 🗑️ أمر مسح الطابور كاملاً (للأونر فقط)
+    else if (lowerMessage === "/clearq" || lowerMessage === "تفريغ") {
         if (user.username.toLowerCase() === config.owner.toLowerCase()) {
-            // مسح ملفات الـ Cache للأغاني المحملة مسبقاً لحفظ مساحة الهارد
             for (const song of song_queue) {
                 if (song.file_path && fs.existsSync(song.file_path)) {
                     try { fs.unlinkSync(song.file_path); } catch(e){}
@@ -746,43 +830,39 @@ bot.on('chatCreate', async (user, message) => {
             }
             song_queue = [];
             save_queue();
-            await bot.message.send("Music queue has been cleared completely.");
+            await bot.message.send(messages[lang].CLEAR_SUCCESS);
             if (!currently_playing) check_and_start_autoplay_timer();
         } else {
-            await bot.message.send("Only the bot owner can clear the queue.");
+            await bot.message.send(messages[lang].CLEAR_OWNER_ONLY);
         }
     }
     
-    else if (lowerMessage === "/del") {
+    // ❌ أمر حذف أغنية المستخدم
+    else if (lowerMessage === "/del" || lowerMessage === "مسح" || lowerMessage === "حذف") {
         let idx = song_queue.findIndex(s => s.owner === user.username);
         if (idx !== -1) {
             const removed = song_queue.splice(idx, 1)[0];
-            // مسح ملف الأغنية المحمية لو اتنزلت قبل الحذف
             if (removed.file_path && fs.existsSync(removed.file_path)) {
                 try { fs.unlinkSync(removed.file_path); } catch(e){}
             }
             save_queue();
-            await bot.message.send(`Removed your song: "${removed.title}" from the queue.`);
+            await bot.message.send(messages[lang].DEL_SUCCESS(removed.title));
             
-            // إعادة تحميل الأغنية التي أصبحت الأولى بعد عملية الحذف
             preload_next_song();
             
             if (song_queue.length === 0 && !currently_playing) check_and_start_autoplay_timer();
         } else {
-            await bot.message.send("You don't have any songs in the queue to remove.");
+            await bot.message.send(messages[lang].DEL_NO_SONGS);
         }
     }
-    if (user.username === config.owner || config.admins.includes(user.username)) {
-        
-        // أمر وضع الموقع الجديد
+
+    // 📍 أوامر الموقع الخاصة بالأونر والآدمنز
+    if (user.username === config.owner || (config.admins && config.admins.includes(user.username))) {
         if (message.startsWith("/setpos")) {
             console.log(`[DEBUG] Attempting to retrieve position for user ID: ${user.id}`);
     
             try {
-                // جلب قائمة اللاعبين المتواجدين في الغرفة من الكاش
                 const players = await bot.room.players.cache.get();
-    
-                // البحث عن إحداثيات الشخص اللي كتب الأمر
                 const playerEntry = players.find(p => p[0].id === user.id);
     
                 if (!playerEntry) {
@@ -791,28 +871,20 @@ bot.on('chatCreate', async (user, message) => {
                     return;
                 }
     
-                // استخراج الإحداثيات (المصفوفة تحتوي على بيانات اللاعب في خانة 0 والموقع في خانة 1)
                 const position = playerEntry[1];
-        
-                // حفظ الإحداثيات الجديدة في المتغير وفي الملف
                 botPosition = position;
                 saveBotPosition();
 
                 await bot.message.send("Bot position set! Refreshing...");
-    
-                // انتظار ثانيتين قبل عمل الريفرش
                 await new Promise(resolve => setTimeout(resolve, 2000));
     
-                // التأكد أن الـ ID الخاص بالبوت مسجل لتفادي توقف السكريبت
                 if (!botUserId) {
                     console.error("[ERROR] Bot user ID is not set. Unable to teleport.");
                     await bot.message.send("Error: Could not teleport bot. Please restart the bot and try again.");
                     return;
                 }
     
-                // عمل نقل (Teleport) الفوري للبوت للمكان الجديد المختار
                 await bot.player.teleport(botUserId, botPosition.x, botPosition.y, botPosition.z, botPosition.facing);
-    
                 await bot.message.send("Bot has been refreshed to the new position!");
     
             } catch (error) {
