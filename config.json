@@ -10,5 +10,6 @@
     "icecast_server": "",
     "icecast_port": "",
     "mount_point": "/"
-  }
+  },
+    "language": ""
 }
