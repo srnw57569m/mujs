@@ -7,11 +7,28 @@
     "start": "node index.js"
   },
   "dependencies": {
+    "@google/genai": "^2.20.0",
     "chalk": "^4.1.2",
+    "colors": "^1.4.0",
+    "groq-sdk": "^1.6.0",
     "highrise.sdk": "latest",
-    "colors": "^1.4.0"
+    "highrise.sdk.dev": "^2.4.0",
+    "openai": "^7.9.0",
+    "spotify-web-api-node": "^5.0.2"
   },
   "engines": {
     "node": ">=16.0.0"
-  }
+  },
+  "devDependencies": {},
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/srnw57569m/mujs.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/srnw57569m/mujs/issues"
+  },
+  "homepage": "https://github.com/srnw57569m/mujs#readme"
 }
